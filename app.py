@@ -27,6 +27,13 @@ from bike_wind.rider import (
     smart_default_height_cm,
     standing_height_to_wind_z_m,
 )
+from bike_wind.strava import (
+    StravaAuthError,
+    StravaClient,
+    StravaRateLimitError,
+    load_strava_config,
+)
+from bike_wind.strava.oauth import build_authorize_url, exchange_code
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sample_route.gpx"
 
@@ -84,6 +91,14 @@ def _init_state() -> None:
         st.session_state.position_key = DEFAULT_POSITION_KEY
     if "power_w" not in st.session_state:
         st.session_state.power_w = 220
+    if "strava_access_token" not in st.session_state:
+        st.session_state.strava_access_token = None
+    if "strava_refresh_token" not in st.session_state:
+        st.session_state.strava_refresh_token = None
+    if "strava_meta" not in st.session_state:
+        st.session_state.strava_meta = None
+    if "strava_segment_id" not in st.session_state:
+        st.session_state.strava_segment_id = None
 
     # Widget-backed keys (Streamlit owns these after first render)
     if "rider_kg_input" not in st.session_state:
@@ -96,6 +111,41 @@ def _init_state() -> None:
         st.session_state.bike_lb_input = round(kg_to_lb(st.session_state.bike_kg), 1)
     if "height_cm_input" not in st.session_state:
         st.session_state.height_cm_input = float(st.session_state.height_cm)
+
+
+def _effective_strava_token(config) -> str | None:
+    return st.session_state.strava_access_token or config.access_token
+
+
+def _handle_oauth_callback(config) -> None:
+    """Exchange ?code= from Strava redirect; never log tokens or payloads."""
+    params = st.query_params
+    code = params.get("code")
+    if not code or st.session_state.get("_oauth_handled_code") == code:
+        return
+    if not config.oauth_ready:
+        return
+    try:
+        tokens = exchange_code(
+            client_id=config.client_id,  # type: ignore[arg-type]
+            client_secret=config.client_secret,  # type: ignore[arg-type]
+            code=str(code),
+        )
+        st.session_state.strava_access_token = tokens.access_token
+        st.session_state.strava_refresh_token = tokens.refresh_token
+        st.session_state._oauth_handled_code = code
+        # Clear code from URL without printing secrets
+        try:
+            del st.query_params["code"]
+            if "scope" in st.query_params:
+                del st.query_params["scope"]
+            if "state" in st.query_params:
+                del st.query_params["state"]
+        except Exception:  # noqa: BLE001
+            pass
+        st.success("Strava connected (read scope).")
+    except Exception as exc:  # noqa: BLE001 — no response body in message
+        st.error(f"Strava OAuth failed: {exc}")
 
 
 def _sync_rider_widgets(kg: float) -> None:
@@ -290,6 +340,9 @@ def main() -> None:
             f"total mass {st.session_state.rider_kg + aero.bike_mass_kg:.1f} kg"
         )
 
+    strava_cfg = load_strava_config()
+    _handle_oauth_callback(strava_cfg)
+
     # --- Card 2: Route / time ---
     with st.container(border=True):
         st.subheader("Route & time")
@@ -303,8 +356,167 @@ def main() -> None:
             placeholder="e.g. 12:30 or 750",
             help="Leave blank to skip required-power vs sustainable comparison.",
         )
-        use_sample = st.checkbox("Use sample South Florida GPX", value=True)
-        uploaded = st.file_uploader("Or upload a GPX file", type=["gpx"])
+
+        route_source = st.radio(
+            "Route source",
+            options=["GPX", "Strava segment"],
+            horizontal=True,
+            key="route_source",
+        )
+
+        use_sample = False
+        uploaded = None
+        strava_ref_text = ""
+        selected_starred_id: int | None = None
+
+        if route_source == "GPX":
+            use_sample = st.checkbox("Use sample South Florida GPX", value=True)
+            uploaded = st.file_uploader("Or upload a GPX file", type=["gpx"])
+        else:
+            token = _effective_strava_token(strava_cfg)
+            rl_client = StravaClient(strava_cfg, access_token=token or "pending")
+            rl = rl_client.rate_status()
+            st.caption(
+                f"Strava API budget: {rl.remaining_15m}/200 per 15 min · "
+                f"{rl.remaining_day}/2000 per day"
+            )
+            if rl.limited:
+                st.error(rl.message or "Strava rate limited.")
+
+            # OAuth / token setup
+            if token:
+                st.success("Strava token available (session or STRAVA_ACCESS_TOKEN).")
+            elif strava_cfg.oauth_ready:
+                auth_url = build_authorize_url(
+                    strava_cfg.client_id,  # type: ignore[arg-type]
+                    strava_cfg.redirect_uri,  # type: ignore[arg-type]
+                )
+                st.markdown(f"[Connect Strava (read scope)]({auth_url})")
+            else:
+                st.warning(
+                    "Strava OAuth not configured. Set `STRAVA_CLIENT_ID`, "
+                    "`STRAVA_CLIENT_SECRET`, and `STRAVA_REDIRECT_URI` — or set "
+                    "`STRAVA_ACCESS_TOKEN` for segment URL/ID fetches. "
+                    "GPX path still works without Strava."
+                )
+
+            strava_ref_text = st.text_input(
+                "Strava segment URL or ID",
+                placeholder="https://www.strava.com/segments/229781",
+                help="Also accepts activity effort URLs …/activities/…/segments/…",
+            )
+            c_resolve, _ = st.columns([1, 3])
+            with c_resolve:
+                do_resolve = st.button("Resolve segment", disabled=not token or rl.limited)
+
+            if do_resolve and token and strava_ref_text.strip():
+                try:
+                    client = StravaClient(strava_cfg, access_token=token)
+                    sid, _ref = client.resolve_ref(strava_ref_text)
+                    meta = client.get_segment_meta(sid)
+                    st.session_state.strava_segment_id = sid
+                    st.session_state.strava_meta = {
+                        "segment_id": meta.segment_id,
+                        "name": meta.name,
+                        "distance_m": meta.distance_m,
+                        "average_grade": meta.average_grade,
+                        "from_cache": meta.from_cache,
+                    }
+                except StravaRateLimitError as exc:
+                    st.error(exc.status.message or str(exc))
+                except StravaAuthError as exc:
+                    st.error(str(exc))
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Resolve failed: {exc}")
+
+            if st.session_state.strava_meta:
+                m = st.session_state.strava_meta
+                st.info(
+                    f"**{m['name']}** · id {m['segment_id']} · "
+                    f"{m['distance_m']/1000:.2f} km · avg grade {m['average_grade']:.1f}% "
+                    f"{'(cache)' if m.get('from_cache') else ''}"
+                )
+
+            # Starred segments (OAuth / token)
+            if token:
+                with st.expander("Starred segments", expanded=False):
+                    if st.button("Refresh starred", key="refresh_starred"):
+                        try:
+                            client = StravaClient(strava_cfg, access_token=token)
+                            st.session_state.starred_segments = [
+                                {
+                                    "id": s.segment_id,
+                                    "label": (
+                                        f"{s.name} ({s.distance_m/1000:.1f} km, "
+                                        f"{s.average_grade:.1f}%)"
+                                    ),
+                                }
+                                for s in client.list_starred()
+                            ]
+                        except StravaRateLimitError as exc:
+                            st.error(exc.status.message or str(exc))
+                        except Exception as exc:  # noqa: BLE001
+                            st.error(f"Starred fetch failed: {exc}")
+                    starred = st.session_state.get("starred_segments") or []
+                    if starred:
+                        labels = [s["label"] for s in starred]
+                        picked = st.radio(
+                            "Select a starred segment",
+                            options=["(none)"] + labels,
+                            key="starred_pick",
+                        )
+                        if picked != "(none)":
+                            selected_starred_id = next(
+                                s["id"] for s in starred if s["label"] == picked
+                            )
+                            st.session_state.strava_segment_id = selected_starred_id
+                    else:
+                        st.caption("Click refresh to load starred segments.")
+
+            # Explore (feature-flagged)
+            with st.expander("Explore Segments", expanded=False):
+                if not strava_cfg.extended_access:
+                    st.caption(
+                        "Requires Extended Access — set `STRAVA_EXTENDED_ACCESS=true` "
+                        "when approved (no code change). Currently disabled."
+                    )
+                else:
+                    st.caption("Top 10 ride segments in a bounding box (Extended Access).")
+                    b1, b2, b3, b4 = st.columns(4)
+                    sw_lat = b1.number_input("SW lat", value=26.05, format="%.4f")
+                    sw_lon = b2.number_input("SW lon", value=-80.20, format="%.4f")
+                    ne_lat = b3.number_input("NE lat", value=26.25, format="%.4f")
+                    ne_lon = b4.number_input("NE lon", value=-80.05, format="%.4f")
+                    if st.button("Explore top 10", disabled=not token or rl.limited):
+                        try:
+                            client = StravaClient(strava_cfg, access_token=token)
+                            hits = client.explore([sw_lat, sw_lon, ne_lat, ne_lon])
+                            st.session_state.explore_hits = [
+                                {
+                                    "id": h.segment_id,
+                                    "label": (
+                                        f"{h.name} ({h.distance_m/1000:.1f} km, "
+                                        f"{h.average_grade:.1f}%)"
+                                    ),
+                                }
+                                for h in hits
+                            ]
+                        except Exception as exc:  # noqa: BLE001
+                            st.error(f"Explore failed: {exc}")
+                    explore = st.session_state.get("explore_hits") or []
+                    if explore:
+                        elabels = [h["label"] for h in explore]
+                        epick = st.radio(
+                            "Select explored segment",
+                            options=["(none)"] + elabels,
+                            key="explore_pick",
+                        )
+                        if epick != "(none)":
+                            selected_starred_id = next(
+                                h["id"] for h in explore if h["label"] == epick
+                            )
+                            st.session_state.strava_segment_id = selected_starred_id
+
         run = st.button("Run prediction", type="primary")
 
     if not run:
@@ -319,14 +531,42 @@ def main() -> None:
         return
 
     try:
-        if uploaded is not None and not use_sample:
+        if route_source == "Strava segment":
+            token = _effective_strava_token(strava_cfg)
+            sid = st.session_state.strava_segment_id
+            if selected_starred_id is not None:
+                sid = selected_starred_id
+            if not token:
+                st.error("Strava token required to load a segment. Use GPX or configure auth.")
+                return
+            if not sid and strava_ref_text.strip():
+                client = StravaClient(strava_cfg, access_token=token)
+                sid, _ = client.resolve_ref(strava_ref_text)
+                st.session_state.strava_segment_id = sid
+            if not sid:
+                st.error("Resolve or select a Strava segment first.")
+                return
+            client = StravaClient(strava_cfg, access_token=token)
+            meta, route = client.load_segment_route(int(sid))
+            st.session_state.strava_meta = {
+                "segment_id": meta.segment_id,
+                "name": meta.name,
+                "distance_m": meta.distance_m,
+                "average_grade": meta.average_grade,
+                "from_cache": meta.from_cache,
+            }
+            source_label = f"Strava: {meta.name} ({meta.segment_id})"
+        elif uploaded is not None and not use_sample:
             route = parse_gpx(uploaded.getvalue())
             source_label = uploaded.name
         else:
             route = parse_gpx(FIXTURE)
             source_label = FIXTURE.name
-    except Exception as exc:  # noqa: BLE001 — show parse errors in UI
-        st.error(f"Could not parse GPX: {exc}")
+    except StravaRateLimitError as exc:
+        st.error(exc.status.message or str(exc))
+        return
+    except Exception as exc:  # noqa: BLE001 — show parse/API errors in UI (no payloads)
+        st.error(f"Could not load route: {exc}")
         return
 
     route = downsample_route(route, max_points=300)
