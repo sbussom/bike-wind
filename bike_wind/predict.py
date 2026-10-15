@@ -35,6 +35,8 @@ class PredictionResult:
     params: RiderBikeParams
     rho_mean: float
     weather_ok: bool
+    lats: list[float] = field(default_factory=list)
+    lons: list[float] = field(default_factory=list)
     weather_message: str | None = None
     time_band: TimeBand | None = None
     target_power: TargetPowerResult | None = None
@@ -163,6 +165,8 @@ def predict_speeds(
         params=params_used,
         rho_mean=rho_mean,
         weather_ok=weather_ok,
+        lats=list(route.lats),
+        lons=list(route.lons),
         weather_message=weather_message,
         time_band=band,
         target_power=target,

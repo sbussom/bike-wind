@@ -8,8 +8,11 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import streamlit as st
 
+from streamlit_folium import st_folium
+
 from bike_wind.analysis import format_duration, parse_target_time
 from bike_wind.gpx import parse_gpx
+from bike_wind.map_view import MAP_MIN_HEIGHT_PX, build_wind_route_map
 from bike_wind.physics import RiderBikeParams
 from bike_wind.predict import downsample_route, predict_speeds
 from bike_wind.rider import (
@@ -348,12 +351,38 @@ def main() -> None:
             target_time_s=target_time_s,
         )
 
-    # --- Card 3: Results ---
+    # --- Card 3: Map (middle) ---
+    with st.container(border=True):
+        st.subheader("Map")
+        st.caption(
+            "Route colored teal (tailwind) → red (headwind) from along-track wind. "
+            f"{source_label} · {route.distances_m[-1]/1000:.1f} km"
+        )
+        try:
+            fmap = build_wind_route_map(
+                result.lats,
+                result.lons,
+                result.wind_along_mps,
+                dark=dark,
+                height_px=MAP_MIN_HEIGHT_PX,
+                weather_ok=result.weather_ok,
+            )
+            st_folium(
+                fmap,
+                width=None,
+                height=max(MAP_MIN_HEIGHT_PX, 360),
+                returned_objects=[],
+                use_container_width=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            st.warning(f"Map unavailable: {exc}")
+
+    # --- Card 4: Results ---
     with st.container(border=True):
         st.subheader("Results")
         st.caption(
-            f"Route: {source_label} · {route.distances_m[-1]/1000:.1f} km · {len(route)} points · "
-            f"{POSITION_PRESETS[aero.position_key].label} · Cd·A={aero.cd * aero.area_m2:.3f}"
+            f"{POSITION_PRESETS[aero.position_key].label} · Cd·A={aero.cd * aero.area_m2:.3f} · "
+            f"{len(route)} points"
         )
         st.info(
             "Decision aid, not a fortune teller. Forecast accuracy degrades past day 5; "
