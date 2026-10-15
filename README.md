@@ -6,6 +6,8 @@ Upload a GPX (or use the sample), set position / aero / weight / power, pick a d
 
 **Phase 2 results:** optional KOM/target time → required vs sustainable power + implausible flags; ETA uncertainty band by forecast horizon; head/tail wind summary; distance-bin table; reliability copy.
 
+**Phase 3 map:** Folium middle card — dark/light Esri basemap, route colored teal→red by along-track wind, auto-fit bounds.
+
 ## Setup
 
 ```bash
@@ -40,6 +42,9 @@ bike_wind/
   physics/     # forces + iterative velocity solver
   gpx/         # GPX → lat/lon/elev/distance streams
   weather/     # Open-Meteo forecast + log-profile wind
+  rider.py     # position / aero presets
+  analysis.py  # KOM power, ETA bands, bins
+  map_view.py  # Folium teal→red wind map
   predict.py   # end-to-end orchestration
 app.py         # Streamlit UI
 fixtures/      # sample_route.gpx
