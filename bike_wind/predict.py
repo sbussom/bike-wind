@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Sequence
 
 from bike_wind.gpx.parse import RouteStreams
+from bike_wind.physics.constants import RIDER_HEIGHT_M
 from bike_wind.physics.forces import RiderBikeParams, WindComponents
 from bike_wind.physics.solver import solve_speeds
 from bike_wind.weather.open_meteo import WeatherFetchError, fetch_forecast_along_route
@@ -51,6 +52,7 @@ def predict_speeds(
     when: datetime,
     *,
     max_weather_samples: int = 12,
+    wind_height_m: float = RIDER_HEIGHT_M,
 ) -> PredictionResult:
     """Solve speeds with and without wind for a route at ``when``."""
     grades = route.grades()
@@ -73,6 +75,7 @@ def predict_speeds(
             bearings,
             when,
             max_samples=max_weather_samples,
+            z_m=wind_height_m,
         )
         winds = [fp.wind for fp in forecast]
         wind_along = [fp.along_track_mps for fp in forecast]

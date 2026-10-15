@@ -10,7 +10,7 @@ from typing import Sequence
 import requests
 
 from bike_wind.physics.forces import WindComponents, air_density
-from bike_wind.physics.constants import RHO_DEFAULT, Z0_OPEN_GRASS
+from bike_wind.physics.constants import RIDER_HEIGHT_M, RHO_DEFAULT, Z0_OPEN_GRASS
 from bike_wind.weather.wind_profile import wind_uv_at_rider_height
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
@@ -53,6 +53,7 @@ def fetch_forecast_along_route(
     *,
     max_samples: int = 12,
     z0_m: float = Z0_OPEN_GRASS,
+    z_m: float = RIDER_HEIGHT_M,
     session: requests.Session | None = None,
     timeout_s: float = DEFAULT_TIMEOUT_S,
 ) -> list[ForecastPoint]:
@@ -78,6 +79,7 @@ def fetch_forecast_along_route(
                 bearing_deg=bearings_deg[idx],
                 when_utc=when_utc,
                 z0_m=z0_m,
+                z_m=z_m,
                 timeout_s=timeout_s,
             )
     except (requests.RequestException, KeyError, ValueError, IndexError) as exc:
@@ -116,6 +118,7 @@ def _fetch_one(
     bearing_deg: float,
     when_utc: datetime,
     z0_m: float,
+    z_m: float,
     timeout_s: float,
 ) -> ForecastPoint:
     params = {
@@ -144,7 +147,7 @@ def _fetch_one(
     pressure_hpa = float(hourly["surface_pressure"][ti])
     u10 = float(hourly["wind_u_component_10m"][ti])
     v10 = float(hourly["wind_v_component_10m"][ti])
-    u_r, v_r = wind_uv_at_rider_height(u10, v10, z0_m=z0_m)
+    u_r, v_r = wind_uv_at_rider_height(u10, v10, z_m=z_m, z0_m=z0_m)
     along, cross = _along_cross(u_r, v_r, bearing_deg)
     rho = air_density(temp_c, pressure_hpa) if pressure_hpa > 0 else RHO_DEFAULT
 

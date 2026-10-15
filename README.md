@@ -1,6 +1,8 @@
 # Bike wind speed predictions
 
-Phase 0 vertical slice: upload a GPX (or use the sample), pick rider power/weight and a datetime, pull Open-Meteo forecast wind along the route, and plot predicted ground speed vs distance.
+Upload a GPX (or use the sample), set position / aero / weight / power, pick a datetime, pull Open-Meteo forecast wind along the route, and plot predicted ground speed vs distance.
+
+**Phase 1 rider UI:** position radios (TT / drops / hoods / upright), kg↔lbs weight fields with presets, bike weight, aero kit toggles, height under Advanced.
 
 ## Setup
 

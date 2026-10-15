@@ -1,3 +1,3 @@
-"""Bike wind speed prediction — Phase 0 vertical slice."""
+"""Bike wind speed prediction."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
