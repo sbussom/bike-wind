@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+from bike_wind.settings import get_setting
 
 REPO_CACHE = Path(__file__).resolve().parents[2] / ".cache" / "weather"
 
@@ -26,7 +27,8 @@ class CachedForecastRaw:
 
 
 def default_weather_cache_path() -> Path:
-    base = Path(os.environ.get("BIKE_WIND_CACHE") or REPO_CACHE)
+    raw = get_setting("BIKE_WIND_CACHE")
+    base = Path(raw or REPO_CACHE)
     # If BIKE_WIND_CACHE points at strava dir parent, keep weather sibling
     if base.name == "strava":
         return base.parent / "weather" / "forecasts.sqlite"

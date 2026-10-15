@@ -7,13 +7,13 @@ callers must fall back to the default Open-Meteo forecast.
 
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import Sequence
 
 import requests
 
 from bike_wind.physics.constants import RIDER_HEIGHT_M, Z0_OPEN_GRASS
+from bike_wind.settings import get_bool_setting
 from bike_wind.weather.cache import CachedForecastRaw, ForecastCache
 from bike_wind.weather.open_meteo import (
     DEFAULT_TIMEOUT_S,
@@ -36,8 +36,8 @@ SOURCE_KEY = "hrrr"
 
 
 def hrrr_enabled_by_env() -> bool:
-    flag = (os.environ.get("BIKE_WIND_HRRR") or "false").strip().lower()
-    return flag in {"1", "true", "yes", "on"}
+    """True when BIKE_WIND_HRRR is set in env or Streamlit secrets."""
+    return get_bool_setting("BIKE_WIND_HRRR", default=False)
 
 
 def in_conus(lat: float, lon: float) -> bool:

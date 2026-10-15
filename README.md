@@ -30,17 +30,34 @@ Open http://localhost:8501. GPX works with no Strava credentials. Use **Prefer N
 
 No special build step beyond `pip install -r requirements.txt`.
 
-## Environment variables
+## Environment variables / Streamlit secrets
 
-| Env var | Purpose |
+Each setting is read from **env first**, then `st.secrets` of the same name (Streamlit Cloud typically only has secrets).
+
+| Key | Purpose |
 | --- | --- |
 | `STRAVA_ACCESS_TOKEN` | Segment URL/ID + streams without OAuth UI |
 | `STRAVA_CLIENT_ID` | OAuth app client id |
 | `STRAVA_CLIENT_SECRET` | OAuth app client secret |
-| `STRAVA_REDIRECT_URI` | Must match Strava app (e.g. Cloud URL or `http://localhost:8501`) |
+| `STRAVA_REDIRECT_URI` | Must match Strava callback (Cloud app root URL) |
 | `STRAVA_EXTENDED_ACCESS` | Default `false`. Set `true` to enable Explore Segments |
 | `BIKE_WIND_HRRR` | Default `false`. Set `true` so the HRRR UI toggle defaults on |
 | `BIKE_WIND_CACHE` | Root for SQLite caches (Strava + weather forecasts) |
+
+### Streamlit Cloud + Strava OAuth
+
+Live app: https://bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app
+
+1. Strava API settings → **Authorization Callback Domain**: `bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app`
+2. Cloud **Secrets** (TOML):
+
+```toml
+STRAVA_CLIENT_ID = "your_client_id"
+STRAVA_CLIENT_SECRET = "your_client_secret"
+STRAVA_REDIRECT_URI = "https://bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app"
+```
+
+3. Reboot the app → Route source **Strava segment** → **Connect Strava**.
 
 **Privacy:** Strava payloads/tokens are never sent to LLMs and are not application-logged. Caches live under `.cache/` (or `BIKE_WIND_CACHE`).
 

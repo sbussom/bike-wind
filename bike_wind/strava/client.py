@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -10,6 +9,7 @@ from typing import Any, Sequence
 import requests
 
 from bike_wind.gpx.parse import RouteStreams
+from bike_wind.settings import get_bool_setting, get_setting
 from bike_wind.strava.cache import CachedSegment, SegmentCache
 from bike_wind.strava.rate_limit import RateLimitExceeded, RateLimiter, RateLimitStatus
 from bike_wind.strava.urls import ParsedStravaRef, parse_strava_segment_ref
@@ -82,24 +82,18 @@ class StravaRateLimitError(StravaError):
 
 
 def load_strava_config(*, cache_dir: Path | None = None) -> StravaConfig:
-    flag = (os.environ.get("STRAVA_EXTENDED_ACCESS") or "false").strip().lower()
-    extended = flag in {"1", "true", "yes", "on"}
-    cache = cache_dir or Path(os.environ.get("BIKE_WIND_CACHE") or REPO_CACHE)
+    """Load Strava settings from env, then Streamlit secrets (same key names)."""
+    extended = get_bool_setting("STRAVA_EXTENDED_ACCESS", default=False)
+    cache_raw = get_setting("BIKE_WIND_CACHE")
+    cache = cache_dir or Path(cache_raw or REPO_CACHE)
     return StravaConfig(
-        access_token=_env("STRAVA_ACCESS_TOKEN"),
-        client_id=_env("STRAVA_CLIENT_ID"),
-        client_secret=_env("STRAVA_CLIENT_SECRET"),
-        redirect_uri=_env("STRAVA_REDIRECT_URI"),
+        access_token=get_setting("STRAVA_ACCESS_TOKEN"),
+        client_id=get_setting("STRAVA_CLIENT_ID"),
+        client_secret=get_setting("STRAVA_CLIENT_SECRET"),
+        redirect_uri=get_setting("STRAVA_REDIRECT_URI"),
         extended_access=extended,
         cache_dir=cache,
     )
-
-
-def _env(name: str) -> str | None:
-    val = os.environ.get(name)
-    if val is None or not str(val).strip():
-        return None
-    return str(val).strip()
 
 
 class StravaClient:
