@@ -4,6 +4,8 @@ Upload a GPX (or use the sample), set position / aero / weight / power, pick a d
 
 **Phase 1 rider UI:** position radios (TT / drops / hoods / upright), kg↔lbs weight fields with presets, bike weight, aero kit toggles, height under Advanced.
 
+**Phase 2 results:** optional KOM/target time → required vs sustainable power + implausible flags; ETA uncertainty band by forecast horizon; head/tail wind summary; distance-bin table; reliability copy.
+
 ## Setup
 
 ```bash
