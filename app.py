@@ -149,47 +149,62 @@ def _handle_oauth_callback(config) -> None:
         st.error(f"Strava OAuth failed: {exc}")
 
 
-def _sync_rider_widgets(kg: float) -> None:
-    st.session_state.rider_kg = round(float(kg), 2)
-    st.session_state.rider_kg_input = float(st.session_state.rider_kg)
-    st.session_state.rider_lb_input = round(kg_to_lb(st.session_state.rider_kg), 1)
+def _apply_rider_kg(kg: float, *, reset_height: bool = False) -> None:
+    """Update canonical rider mass + dual-unit widget keys.
 
-
-def _sync_bike_widgets(kg: float) -> None:
-    st.session_state.bike_kg = round(float(kg), 2)
-    st.session_state.bike_kg_input = float(st.session_state.bike_kg)
-    st.session_state.bike_lb_input = round(kg_to_lb(st.session_state.bike_kg), 1)
-
-
-def _maybe_update_height_from_weight() -> None:
+    Safe only from ``on_change`` / ``on_click`` callbacks (before widgets render).
+    """
+    kg = round(float(kg), 2)
+    st.session_state.rider_kg = kg
+    st.session_state.rider_kg_input = float(kg)
+    st.session_state.rider_lb_input = round(kg_to_lb(kg), 1)
+    if reset_height:
+        st.session_state.height_manual = False
     if not st.session_state.height_manual:
-        st.session_state.height_cm = smart_default_height_cm(st.session_state.rider_kg)
-        st.session_state.height_cm_input = float(st.session_state.height_cm)
+        height = smart_default_height_cm(kg)
+        st.session_state.height_cm = height
+        st.session_state.height_cm_input = float(height)
+
+
+def _apply_bike_kg(kg: float, *, manual: bool | None = None) -> None:
+    """Update canonical bike mass + dual-unit widget keys (callback-only)."""
+    kg = round(float(kg), 2)
+    st.session_state.bike_kg = kg
+    st.session_state.bike_kg_input = float(kg)
+    st.session_state.bike_lb_input = round(kg_to_lb(kg), 1)
+    if manual is not None:
+        st.session_state.bike_mass_manual = manual
 
 
 def _on_rider_kg() -> None:
-    _sync_rider_widgets(st.session_state.rider_kg_input)
-    _maybe_update_height_from_weight()
+    _apply_rider_kg(st.session_state.rider_kg_input)
 
 
 def _on_rider_lb() -> None:
-    _sync_rider_widgets(lb_to_kg(st.session_state.rider_lb_input))
-    _maybe_update_height_from_weight()
+    _apply_rider_kg(lb_to_kg(st.session_state.rider_lb_input))
 
 
 def _on_bike_kg() -> None:
-    _sync_bike_widgets(st.session_state.bike_kg_input)
-    st.session_state.bike_mass_manual = True
+    _apply_bike_kg(st.session_state.bike_kg_input, manual=True)
 
 
 def _on_bike_lb() -> None:
-    _sync_bike_widgets(lb_to_kg(st.session_state.bike_lb_input))
-    st.session_state.bike_mass_manual = True
+    _apply_bike_kg(lb_to_kg(st.session_state.bike_lb_input), manual=True)
 
 
 def _on_height_cm() -> None:
     st.session_state.height_cm = float(st.session_state.height_cm_input)
     st.session_state.height_manual = True
+
+
+def _on_weight_preset(kg: float) -> None:
+    """Button ``on_click`` — runs before the next script run's widgets."""
+    _apply_rider_kg(kg, reset_height=True)
+
+
+def _on_reset_bike_mass() -> None:
+    preset_kg = POSITION_PRESETS[st.session_state.position_key].bike_mass_kg
+    _apply_bike_kg(preset_kg, manual=False)
 
 
 def main() -> None:
@@ -216,10 +231,11 @@ def main() -> None:
             horizontal=True,
         )
         position_key = position_key_for_label(position_label)
+        # Update bike defaults *before* bike weight widgets are created this run.
         if position_key != st.session_state.position_key:
             st.session_state.position_key = position_key
             if not st.session_state.bike_mass_manual:
-                _sync_bike_widgets(POSITION_PRESETS[position_key].bike_mass_kg)
+                _apply_bike_kg(POSITION_PRESETS[position_key].bike_mass_kg, manual=False)
 
         preset = POSITION_PRESETS[st.session_state.position_key]
         st.caption(
@@ -248,14 +264,19 @@ def main() -> None:
                 on_change=_on_rider_lb,
             )
 
+        # Keep canonical rider_kg aligned if inputs changed without a full callback path
+        st.session_state.rider_kg = float(st.session_state.rider_kg_input)
+
         preset_cols = st.columns(len(RIDER_WEIGHT_PRESETS_KG))
         for col, kg in zip(preset_cols, RIDER_WEIGHT_PRESETS_KG):
             with col:
-                if st.button(f"{int(kg)}", key=f"wpreset_{int(kg)}", use_container_width=True):
-                    _sync_rider_widgets(kg)
-                    st.session_state.height_manual = False
-                    _maybe_update_height_from_weight()
-                    st.rerun()
+                st.button(
+                    f"{int(kg)}",
+                    key=f"wpreset_{int(kg)}",
+                    use_container_width=True,
+                    on_click=_on_weight_preset,
+                    args=(kg,),
+                )
 
         st.markdown("**Bike weight**")
         bw1, bw2 = st.columns(2)
@@ -277,11 +298,12 @@ def main() -> None:
                 key="bike_lb_input",
                 on_change=_on_bike_lb,
             )
+        st.session_state.bike_kg = float(st.session_state.bike_kg_input)
         if st.session_state.bike_mass_manual:
-            if st.button("Reset bike weight to position default"):
-                st.session_state.bike_mass_manual = False
-                _sync_bike_widgets(POSITION_PRESETS[st.session_state.position_key].bike_mass_kg)
-                st.rerun()
+            st.button(
+                "Reset bike weight to position default",
+                on_click=_on_reset_bike_mass,
+            )
 
         p1, p2 = st.columns(2)
         with p1:
