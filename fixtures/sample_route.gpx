@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="bike-wind-phase0"
+  xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>Sample South Florida flat loop (~8 km)</name>
+    <desc>Synthetic coastal-ish route for demos without upload</desc>
+  </metadata>
+  <trk>
+    <name>Sample Route</name>
+    <trkseg>
+      <trkpt lat="26.1224" lon="-80.1373"><ele>2.0</ele></trkpt>
+      <trkpt lat="26.1300" lon="-80.1373"><ele>2.5</ele></trkpt>
+      <trkpt lat="26.1380" lon="-80.1370"><ele>3.0</ele></trkpt>
+      <trkpt lat="26.1460" lon="-80.1365"><ele>3.5</ele></trkpt>
+      <trkpt lat="26.1540" lon="-80.1355"><ele>4.0</ele></trkpt>
+      <trkpt lat="26.1620" lon="-80.1340"><ele>4.5</ele></trkpt>
+      <trkpt lat="26.1700" lon="-80.1320"><ele>5.0</ele></trkpt>
+      <trkpt lat="26.1705" lon="-80.1200"><ele>4.0</ele></trkpt>
+      <trkpt lat="26.1710" lon="-80.1080"><ele>3.0</ele></trkpt>
+      <trkpt lat="26.1630" lon="-80.1060"><ele>2.5</ele></trkpt>
+      <trkpt lat="26.1550" lon="-80.1050"><ele>2.0</ele></trkpt>
+      <trkpt lat="26.1470" lon="-80.1055"><ele>2.0</ele></trkpt>
+      <trkpt lat="26.1390" lon="-80.1070"><ele>2.5</ele></trkpt>
+      <trkpt lat="26.1310" lon="-80.1100"><ele>3.0</ele></trkpt>
+      <trkpt lat="26.1230" lon="-80.1150"><ele>2.5</ele></trkpt>
+      <trkpt lat="26.1200" lon="-80.1250"><ele>2.0</ele></trkpt>
+      <trkpt lat="26.1224" lon="-80.1373"><ele>2.0</ele></trkpt>
+    </trkseg>
+  </trk>
+</gpx>
