@@ -34,6 +34,7 @@ from bike_wind.strava import (
     load_strava_config,
 )
 from bike_wind.strava.oauth import build_authorize_url, exchange_code
+from bike_wind.weather import hrrr_enabled_by_env
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sample_route.gpx"
 
@@ -356,6 +357,15 @@ def main() -> None:
             placeholder="e.g. 12:30 or 750",
             help="Leave blank to skip required-power vs sustainable comparison.",
         )
+        prefer_hrrr = st.toggle(
+            "Prefer NOAA HRRR wind (CONUS, ~3 km)",
+            value=hrrr_enabled_by_env(),
+            help=(
+                "Uses Open-Meteo's gfs_hrrr model when the route is in CONUS. "
+                "Falls back to Open-Meteo global forecast otherwise. "
+                "Default off; set BIKE_WIND_HRRR=true to default on."
+            ),
+        )
 
         route_source = st.radio(
             "Route source",
@@ -589,6 +599,7 @@ def main() -> None:
             when_dt,
             wind_height_m=wind_z,
             target_time_s=target_time_s,
+            prefer_hrrr=prefer_hrrr,
         )
 
     # --- Card 3: Map (middle) ---
@@ -628,15 +639,31 @@ def main() -> None:
             "Decision aid, not a fortune teller. Forecast accuracy degrades past day 5; "
             "climbs are noisier when GPX elevation/grade is coarse."
         )
+        with st.expander("Reliability & back-test notes", expanded=False):
+            st.markdown(
+                """
+- **Flat roads:** expect roughly ±5% on predicted time vs known sustained-power files when
+  wind and mass are well specified.
+- **Climbs:** noisier — GPX grade noise and elevation smoothing dominate; treat climb ETAs
+  as directional, not precise.
+- **Assumptions (conservative):** open-grass roughness \(z_0=0.03\), tuck −15% area on
+  descents only, crosswind adds drag (never free speed).
+- **Wind sources:** Open-Meteo is primary (cached locally). Optional HRRR (~3 km, CONUS)
+  via UI toggle / `BIKE_WIND_HRRR`; falls back to Open-Meteo outside CONUS or on failure.
+                """
+            )
 
-        if result.weather_message:
+        if result.weather_message and not result.weather_ok:
             st.warning(result.weather_message)
         elif result.weather_ok:
+            src = "HRRR" if result.weather_source == "hrrr" else "Open-Meteo"
             st.success(
-                f"Open-Meteo wind applied (ρ ≈ {result.rho_mean:.3f} kg/m³). "
+                f"{src} wind applied (ρ ≈ {result.rho_mean:.3f} kg/m³). "
                 f"Mean along-track {result.mean_wind_along_mps:+.1f} m/s "
                 f"(head {result.mean_headwind_mps:.1f} · tail {result.mean_tailwind_mps:.1f})."
             )
+            if result.weather_message:
+                st.caption(result.weather_message)
 
         band = result.time_band
         eta = result.eta_with_wind_s

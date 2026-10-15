@@ -1,11 +1,8 @@
 # Bike wind speed predictions
 
-Predict ground speed on a road segment under forecast wind: GPX or Strava segment → Open-Meteo → physics → map + chart.
+Predict ground speed on a road segment under forecast wind: GPX or Strava segment → Open-Meteo (optional HRRR) → physics → map + chart.
 
-**Phase 1:** position / aero / dual-unit weights.  
-**Phase 2:** KOM power, ETA uncertainty band, bins.  
-**Phase 3:** Folium map teal→red by along-track wind.  
-**Phase 4:** Strava segment URL/ID, streams cache, OAuth starred, Explore (feature-flagged).
+Phases 0–5 shipped: vertical slice, rider/aero UI, rich results, Folium map, Strava, forecast cache + optional HRRR + reliability notes.
 
 ## Setup
 
@@ -15,28 +12,44 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Run the app
+## Run locally
 
 ```bash
 streamlit run app.py
 ```
 
-Open the URL Streamlit prints (usually http://localhost:8501). GPX works with no Strava credentials.
+Open http://localhost:8501. GPX works with no Strava credentials. Use **Prefer NOAA HRRR** on CONUS routes for ~3 km wind; otherwise Open-Meteo is primary.
 
-## Strava (optional)
+## Deploy (Streamlit Community Cloud)
+
+1. Push this repo to GitHub.
+2. At [share.streamlit.io](https://share.streamlit.io) → **New app**.
+3. Set **Main file path** to `app.py`.
+4. Add secrets / env as needed (see table below) in the app settings.
+5. Python version ≥ 3.10; `requirements.txt` is picked up automatically.
+
+No special build step beyond `pip install -r requirements.txt`.
+
+## Environment variables
 
 | Env var | Purpose |
 | --- | --- |
-| `STRAVA_ACCESS_TOKEN` | Personal access token for segment URL/ID + streams (no OAuth UI) |
+| `STRAVA_ACCESS_TOKEN` | Segment URL/ID + streams without OAuth UI |
 | `STRAVA_CLIENT_ID` | OAuth app client id |
 | `STRAVA_CLIENT_SECRET` | OAuth app client secret |
-| `STRAVA_REDIRECT_URI` | Must match Strava app settings (e.g. `http://localhost:8501`) |
-| `STRAVA_EXTENDED_ACCESS` | Default `false`. Set `true` to enable Explore Segments (top 10 in bbox) when approved — no code change |
-| `BIKE_WIND_CACHE` | Optional override for SQLite cache dir (default `.cache/strava`) |
+| `STRAVA_REDIRECT_URI` | Must match Strava app (e.g. Cloud URL or `http://localhost:8501`) |
+| `STRAVA_EXTENDED_ACCESS` | Default `false`. Set `true` to enable Explore Segments |
+| `BIKE_WIND_HRRR` | Default `false`. Set `true` so the HRRR UI toggle defaults on |
+| `BIKE_WIND_CACHE` | Root for SQLite caches (Strava + weather forecasts) |
 
-OAuth uses **read** scope. Tokens live in Streamlit session state after redirect; rate limits (200/15 min, 2000/day) are tracked locally and shown in the UI.
+**Privacy:** Strava payloads/tokens are never sent to LLMs and are not application-logged. Caches live under `.cache/` (or `BIKE_WIND_CACHE`).
 
-**Privacy:** Strava payloads (streams, athlete data, tokens) are never sent to LLMs and are not written to application logs. Segment details + streams are stored only in local SQLite under `.cache/strava/`.
+## Reliability / back-test notes
+
+- Flat roads: target ~±5% predicted time vs known sustained-power files when wind/mass are right.
+- Climbs: noisier (GPX grade noise) — treat as directional.
+- Conservative aero: \(z_0=0.03\), tuck −15% A on descents, crosswind adds drag only.
+- Open-Meteo forecasts are SQLite-cached by `(lat, lon, forecast_ts)`; HRRR samples use the same cache with `source=hrrr`.
 
 ## Tests
 
@@ -44,25 +57,16 @@ OAuth uses **read** scope. Tokens live in Streamlit session state after redirect
 pytest
 ```
 
-Includes physics, analysis, map color helpers, and mocked Strava URL/client/cache/rate-limit tests (no live Strava calls).
-
 ## Package layout
 
 ```
 bike_wind/
   physics/     # forces + iterative velocity solver
   gpx/         # GPX → lat/lon/elev/distance streams
-  weather/     # Open-Meteo forecast + log-profile wind
+  weather/     # Open-Meteo, optional HRRR, forecast SQLite cache
   strava/      # URL parse, API client, OAuth, SQLite cache, rate limits
-  rider.py     # position / aero presets
-  analysis.py  # KOM power, ETA bands, bins
-  map_view.py  # Folium teal→red wind map
-  predict.py   # end-to-end orchestration
-app.py         # Streamlit UI
-fixtures/      # sample_route.gpx
+  rider.py / analysis.py / map_view.py / predict.py
+app.py         # Streamlit entry (Community Cloud main file)
+fixtures/ sample_route.gpx
 tests/
 ```
-
-## Out of scope (Phase 5)
-
-NOAA HRRR, wind forecast SQLite cache polish, back-test notes.

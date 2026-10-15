@@ -20,7 +20,8 @@ from bike_wind.gpx.parse import RouteStreams
 from bike_wind.physics.constants import RIDER_HEIGHT_M
 from bike_wind.physics.forces import RiderBikeParams, WindComponents
 from bike_wind.physics.solver import solve_speeds
-from bike_wind.weather.open_meteo import WeatherFetchError, fetch_forecast_along_route
+from bike_wind.weather.fetch import fetch_weather_along_route
+from bike_wind.weather.open_meteo import WeatherFetchError
 
 
 @dataclass
@@ -38,6 +39,7 @@ class PredictionResult:
     lats: list[float] = field(default_factory=list)
     lons: list[float] = field(default_factory=list)
     weather_message: str | None = None
+    weather_source: str = "none"
     time_band: TimeBand | None = None
     target_power: TargetPowerResult | None = None
     bins: list[SegmentBin] = field(default_factory=list)
@@ -74,6 +76,7 @@ def predict_speeds(
     max_weather_samples: int = 12,
     wind_height_m: float = RIDER_HEIGHT_M,
     target_time_s: float | None = None,
+    prefer_hrrr: bool = False,
 ) -> PredictionResult:
     """Solve speeds with and without wind; attach time band, KOM power, bins."""
     grades = route.grades()
@@ -87,18 +90,23 @@ def predict_speeds(
     rho_mean = params.rho
     weather_ok = False
     weather_message: str | None = None
+    weather_source = "none"
     speeds_wind = list(speeds_calm)
     params_used = params
 
     try:
-        forecast = fetch_forecast_along_route(
+        wx = fetch_weather_along_route(
             route.lats,
             route.lons,
             bearings,
             when,
+            prefer_hrrr=prefer_hrrr,
             max_samples=max_weather_samples,
             z_m=wind_height_m,
         )
+        forecast = wx.points
+        weather_source = wx.source
+        weather_message = wx.message
         winds = [fp.wind for fp in forecast]
         wind_along = [fp.along_track_mps for fp in forecast]
         wind_cross = [abs(fp.cross_track_mps) for fp in forecast]
@@ -168,6 +176,7 @@ def predict_speeds(
         lats=list(route.lats),
         lons=list(route.lons),
         weather_message=weather_message,
+        weather_source=weather_source,
         time_band=band,
         target_power=target,
         bins=bins,
