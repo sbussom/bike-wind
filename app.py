@@ -8,6 +8,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import streamlit as st
 
+from bike_wind.analysis import format_duration, parse_target_time
 from bike_wind.gpx import parse_gpx
 from bike_wind.physics import RiderBikeParams
 from bike_wind.predict import downsample_route, predict_speeds
@@ -63,16 +64,6 @@ def _apply_theme(dark: bool) -> None:
             """,
             unsafe_allow_html=True,
         )
-
-
-def _format_duration(seconds: float) -> str:
-    if seconds <= 0:
-        return "—"
-    m, s = divmod(int(round(seconds)), 60)
-    h, m = divmod(m, 60)
-    if h:
-        return f"{h}h {m:02d}m"
-    return f"{m}m {s:02d}s"
 
 
 def _init_state() -> None:
@@ -303,12 +294,25 @@ def main() -> None:
             hours=3
         )
         when = st.datetime_input("Ride datetime (UTC)", value=default_dt)
+        target_raw = st.text_input(
+            "Optional KOM / target time (seconds or mm:ss)",
+            value="",
+            placeholder="e.g. 12:30 or 750",
+            help="Leave blank to skip required-power vs sustainable comparison.",
+        )
         use_sample = st.checkbox("Use sample South Florida GPX", value=True)
         uploaded = st.file_uploader("Or upload a GPX file", type=["gpx"])
         run = st.button("Run prediction", type="primary")
 
     if not run:
         st.info("Adjust rider setup and route, then run prediction.")
+        return
+
+    target_time_s: float | None = None
+    try:
+        target_time_s = parse_target_time(target_raw)
+    except ValueError as exc:
+        st.error(f"Target time: {exc}")
         return
 
     try:
@@ -336,7 +340,13 @@ def main() -> None:
         when_dt = when if isinstance(when, datetime) else datetime.combine(when, datetime.min.time())
         if when_dt.tzinfo is None:
             when_dt = when_dt.replace(tzinfo=timezone.utc)
-        result = predict_speeds(route, params, when_dt, wind_height_m=wind_z)
+        result = predict_speeds(
+            route,
+            params,
+            when_dt,
+            wind_height_m=wind_z,
+            target_time_s=target_time_s,
+        )
 
     # --- Card 3: Results ---
     with st.container(border=True):
@@ -345,24 +355,63 @@ def main() -> None:
             f"Route: {source_label} · {route.distances_m[-1]/1000:.1f} km · {len(route)} points · "
             f"{POSITION_PRESETS[aero.position_key].label} · Cd·A={aero.cd * aero.area_m2:.3f}"
         )
+        st.info(
+            "Decision aid, not a fortune teller. Forecast accuracy degrades past day 5; "
+            "climbs are noisier when GPX elevation/grade is coarse."
+        )
 
         if result.weather_message:
             st.warning(result.weather_message)
         elif result.weather_ok:
             st.success(
                 f"Open-Meteo wind applied (ρ ≈ {result.rho_mean:.3f} kg/m³). "
-                "Forecast skill declines past ~day 5."
+                f"Mean along-track {result.mean_wind_along_mps:+.1f} m/s "
+                f"(head {result.mean_headwind_mps:.1f} · tail {result.mean_tailwind_mps:.1f})."
             )
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("ETA with wind", _format_duration(result.eta_with_wind_s))
-        m2.metric("ETA calm air", _format_duration(result.eta_no_wind_s))
-        avg = (
-            sum(result.speeds_with_wind_kmh) / len(result.speeds_with_wind_kmh)
-            if result.speeds_with_wind_kmh
-            else 0.0
-        )
-        m3.metric("Avg speed (wind)", f"{avg:.1f} km/h")
+        band = result.time_band
+        eta = result.eta_with_wind_s
+        if band is not None:
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric(
+                "ETA with wind",
+                format_duration(band.eta_s),
+                delta=f"band {format_duration(band.eta_low_s)}–{format_duration(band.eta_high_s)}",
+                delta_color="off",
+            )
+            m2.metric("ETA calm air", format_duration(result.eta_no_wind_s))
+            avg = (
+                sum(result.speeds_with_wind_kmh) / len(result.speeds_with_wind_kmh)
+                if result.speeds_with_wind_kmh
+                else 0.0
+            )
+            m3.metric("Avg speed (wind)", f"{avg:.1f} km/h")
+            m4.metric("Horizon", f"{band.horizon_days:.1f} d")
+            st.caption(band.note)
+        else:
+            m1, m2, m3 = st.columns(3)
+            m1.metric("ETA with wind", format_duration(eta))
+            m2.metric("ETA calm air", format_duration(result.eta_no_wind_s))
+            avg = (
+                sum(result.speeds_with_wind_kmh) / len(result.speeds_with_wind_kmh)
+                if result.speeds_with_wind_kmh
+                else 0.0
+            )
+            m3.metric("Avg speed (wind)", f"{avg:.1f} km/h")
+
+        if result.target_power is not None:
+            tp = result.target_power
+            st.markdown("**KOM / target power**")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Required power", f"{tp.required_power_w:.0f} W")
+            c2.metric("Your sustainable", f"{tp.sustainable_power_w:.0f} W")
+            c3.metric("Ratio", f"{tp.ratio:.2f}×")
+            if tp.implausible:
+                st.error(tp.message)
+            elif tp.achievable:
+                st.success(tp.message)
+            else:
+                st.warning(tp.message)
 
         fig, ax = plt.subplots(figsize=(9, 4.2))
         bg = "#0e1117" if dark else "#f7f8fa"
@@ -397,6 +446,33 @@ def main() -> None:
         fig.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
+
+        if len(result.bins) > 1:
+            st.markdown("**Distance bins**")
+            rows = []
+            for b in result.bins:
+                flag = "⚠ implausible" if b.implausible else ""
+                rows.append(
+                    {
+                        "Bin": b.index,
+                        "km": f"{b.start_km:.1f}–{b.end_km:.1f}",
+                        "Grade %": f"{b.avg_grade_pct:.1f}",
+                        "Wind": b.wind_label,
+                        "km/h wind": f"{b.speed_with_wind_kmh:.1f}",
+                        "km/h calm": f"{b.speed_no_wind_kmh:.1f}",
+                        "Time": format_duration(b.time_with_wind_s),
+                        "P@pace W": f"{b.required_power_w:.0f}" if b.required_power_w else "—",
+                        "Flag": flag,
+                    }
+                )
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+        elif len(result.bins) == 1:
+            b = result.bins[0]
+            st.caption(
+                f"Whole-route summary: {b.wind_label}, grade {b.avg_grade_pct:.1f}%, "
+                f"{b.speed_with_wind_kmh:.1f} km/h with wind vs {b.speed_no_wind_kmh:.1f} calm."
+            )
+
 
 
 if __name__ == "__main__":
