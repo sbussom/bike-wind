@@ -1,8 +1,8 @@
 # Bike wind speed predictions
 
-Predict ground speed on a road segment under forecast wind: GPX or Strava segment → Open-Meteo (optional HRRR) → physics → map + chart.
+Predict ground speed on a road segment under forecast wind: local Windy overview → GPX → Open-Meteo (optional HRRR) → physics → route map + chart.
 
-Phases 0–5 shipped: vertical slice, rider/aero UI, rich results, Folium map, Strava, forecast cache + optional HRRR + reliability notes.
+Phases 0–5 shipped. **Current UI:** Windy wind map at top (SE Florida default), GPX primary; Strava segment URL/ID is optional/collapsed (OAuth paused).
 
 ## Setup
 
