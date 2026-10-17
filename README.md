@@ -2,7 +2,7 @@
 
 Predict ground speed on a road segment under forecast wind: local Windy overview → GPX → Open-Meteo (optional HRRR) → physics → route map + chart.
 
-Phases 0–5 shipped. **Current UI:** Windy wind map at top (SE Florida default), GPX primary; Strava optional (segment URL/ID, starred/saved segments when a token is present, Connect Strava if OAuth secrets are set).
+Phases 0–5 shipped. **Current UI:** Windy wind map at top (auto-centers on loaded route), GPX primary; Strava optional (starred/saved segments auto-select for prediction when picked; Connect Strava if OAuth secrets are set).
 
 ## Setup
 

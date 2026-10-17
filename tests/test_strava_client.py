@@ -55,6 +55,26 @@ def test_resolve_effort_id_fetches_segment(tmp_path: Path) -> None:
     assert session.get.call_args[0][0].endswith("/segment_efforts/777")
 
 
+def test_segment_meta_start_latlng(tmp_path: Path) -> None:
+    session = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {
+        "id": 42,
+        "name": "Coast",
+        "distance": 500.0,
+        "average_grade": 0.5,
+        "elevation_low": 1.0,
+        "elevation_high": 3.0,
+        "start_latlng": [26.1, -80.2],
+    }
+    session.get.return_value = resp
+    client = StravaClient(_config(tmp_path), session=session)
+    meta = client.get_segment_meta(42, use_cache=False)
+    assert meta.start_lat == pytest.approx(26.1)
+    assert meta.start_lon == pytest.approx(-80.2)
+
+
 def test_streams_to_route_and_cache(tmp_path: Path) -> None:
     session = MagicMock()
 

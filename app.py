@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -110,10 +111,14 @@ def _init_state() -> None:
         st.session_state.strava_access_token = None
     if "starred_segments" not in st.session_state:
         st.session_state.starred_segments = None
+    if "use_strava_segment" not in st.session_state:
+        st.session_state.use_strava_segment = False
     if "map_lat" not in st.session_state:
         st.session_state.map_lat = DEFAULT_LAT
     if "map_lon" not in st.session_state:
         st.session_state.map_lon = DEFAULT_LON
+    if "_last_run" not in st.session_state:
+        st.session_state._last_run = None
 
     # Widget-backed keys (Streamlit owns these after first render)
     if "rider_kg_input" not in st.session_state:
@@ -171,6 +176,56 @@ def _on_reset_map_location() -> None:
     st.session_state.map_lon = DEFAULT_LON
     st.session_state.map_lat_input = DEFAULT_LAT
     st.session_state.map_lon_input = DEFAULT_LON
+    st.session_state._pin_auto_centered = False
+
+
+def _queue_map_center(lat: float, lon: float) -> None:
+    """Queue a pin update for the next render (before lat/lon widgets exist)."""
+    st.session_state._pending_map_center = (round(float(lat), 4), round(float(lon), 4))
+
+
+def _apply_pending_map_center() -> bool:
+    """Apply queued pin center before map widgets instantiate. Returns True if applied."""
+    pending = st.session_state.pop("_pending_map_center", None)
+    if pending is None:
+        return False
+    lat, lon = pending
+    st.session_state.map_lat = lat
+    st.session_state.map_lon = lon
+    st.session_state.map_lat_input = lat
+    st.session_state.map_lon_input = lon
+    st.session_state._pin_auto_centered = True
+    return True
+
+
+def _pin_needs_recenter(lat: float, lon: float, *, threshold_deg: float = 0.02) -> bool:
+    cur_lat = float(st.session_state.get("map_lat", DEFAULT_LAT))
+    cur_lon = float(st.session_state.get("map_lon", DEFAULT_LON))
+    return abs(cur_lat - lat) > threshold_deg or abs(cur_lon - lon) > threshold_deg
+
+
+def _select_strava_segment(
+    segment_id: int,
+    *,
+    name: str,
+    distance_m: float = 0.0,
+    average_grade: float = 0.0,
+    from_cache: bool = False,
+    start_lat: float | None = None,
+    start_lon: float | None = None,
+) -> None:
+    """Set active Strava segment and auto-enable 'use instead of GPX'."""
+    st.session_state.strava_segment_id = segment_id
+    st.session_state.strava_meta = {
+        "segment_id": segment_id,
+        "name": name,
+        "distance_m": distance_m,
+        "average_grade": average_grade,
+        "from_cache": from_cache,
+    }
+    st.session_state.use_strava_segment = True
+    if start_lat is not None and start_lon is not None and _pin_needs_recenter(start_lat, start_lon):
+        _queue_map_center(start_lat, start_lon)
 
 
 def _apply_rider_kg(kg: float, *, reset_height: bool = False) -> None:
@@ -233,6 +288,7 @@ def _on_reset_bike_mass() -> None:
 
 def main() -> None:
     _init_state()
+    _apply_pending_map_center()
     dark = st.toggle("Dark theme", value=True)
     _apply_theme(dark)
 
@@ -245,10 +301,16 @@ def main() -> None:
     # --- Card 0: Local wind map (top) ---
     with st.container(border=True):
         st.subheader("Local wind")
-        st.caption(
-            "Windy.com wind overlay (speed colors + streamlines). "
-            "Default: South Florida — tweak the pin below."
-        )
+        if st.session_state.get("_pin_auto_centered"):
+            st.caption(
+                "Windy.com wind overlay — pin centered on the loaded route midpoint. "
+                "Tweak below or reset to SE Florida."
+            )
+        else:
+            st.caption(
+                "Windy.com wind overlay (speed colors + streamlines). "
+                "Default: South Florida — pin auto-centers when you load a route."
+            )
         loc1, loc2, loc3 = st.columns([1, 1, 1])
         with loc1:
             st.number_input(
@@ -500,14 +562,17 @@ def main() -> None:
                     client = StravaClient(strava_cfg, access_token=token)
                     sid, _ref = client.resolve_ref(strava_ref_text)
                     meta = client.get_segment_meta(sid)
-                    st.session_state.strava_segment_id = sid
-                    st.session_state.strava_meta = {
-                        "segment_id": meta.segment_id,
-                        "name": meta.name,
-                        "distance_m": meta.distance_m,
-                        "average_grade": meta.average_grade,
-                        "from_cache": meta.from_cache,
-                    }
+                    _select_strava_segment(
+                        sid,
+                        name=meta.name,
+                        distance_m=meta.distance_m,
+                        average_grade=meta.average_grade,
+                        from_cache=meta.from_cache,
+                        start_lat=meta.start_lat,
+                        start_lon=meta.start_lon,
+                    )
+                    if st.session_state.get("_pending_map_center") is not None:
+                        st.rerun()
                 except StravaRateLimitError as exc:
                     st.error(exc.status.message or str(exc))
                 except StravaAuthError as exc:
@@ -528,6 +593,9 @@ def main() -> None:
                                     f"{s.name} ({s.distance_m/1000:.1f} km, "
                                     f"{s.average_grade:.1f}%)"
                                 ),
+                                "distance_m": s.distance_m,
+                                "average_grade": s.average_grade,
+                                "name": s.name,
                             }
                             for s in client.list_starred()
                         ]
@@ -548,17 +616,22 @@ def main() -> None:
                         options=["(none)"] + labels,
                         key="starred_pick",
                     )
-                    if picked != "(none)":
-                        sid = next(s["id"] for s in starred if s["label"] == picked)
-                        st.session_state.strava_segment_id = sid
-                        # Light meta for display — full streams load on Run
-                        st.session_state.strava_meta = {
-                            "segment_id": sid,
-                            "name": picked.split(" (")[0],
-                            "distance_m": 0.0,
-                            "average_grade": 0.0,
-                            "from_cache": False,
-                        }
+                    if picked == "(none)":
+                        if st.session_state.get("use_strava_segment") and st.session_state.get(
+                            "strava_segment_id"
+                        ):
+                            # Only clear if the active id is from this list
+                            starred_ids = {s["id"] for s in starred}
+                            if st.session_state.strava_segment_id in starred_ids:
+                                st.session_state.use_strava_segment = False
+                    else:
+                        chosen = next(s for s in starred if s["label"] == picked)
+                        _select_strava_segment(
+                            int(chosen["id"]),
+                            name=str(chosen.get("name") or picked.split(" (")[0]),
+                            distance_m=float(chosen.get("distance_m") or 0.0),
+                            average_grade=float(chosen.get("average_grade") or 0.0),
+                        )
 
             # Explore stays gated
             with st.expander("Explore Segments", expanded=False):
@@ -587,6 +660,9 @@ def main() -> None:
                                         f"{h.name} ({h.distance_m/1000:.1f} km, "
                                         f"{h.average_grade:.1f}%)"
                                     ),
+                                    "name": h.name,
+                                    "distance_m": h.distance_m,
+                                    "average_grade": h.average_grade,
                                 }
                                 for h in hits
                             ]
@@ -601,15 +677,13 @@ def main() -> None:
                             key="explore_pick",
                         )
                         if epick != "(none)":
-                            sid = next(h["id"] for h in explore if h["label"] == epick)
-                            st.session_state.strava_segment_id = sid
-                            st.session_state.strava_meta = {
-                                "segment_id": sid,
-                                "name": epick.split(" (")[0],
-                                "distance_m": 0.0,
-                                "average_grade": 0.0,
-                                "from_cache": False,
-                            }
+                            chosen = next(h for h in explore if h["label"] == epick)
+                            _select_strava_segment(
+                                int(chosen["id"]),
+                                name=str(chosen.get("name") or epick.split(" (")[0]),
+                                distance_m=float(chosen.get("distance_m") or 0.0),
+                                average_grade=float(chosen.get("average_grade") or 0.0),
+                            )
 
             if st.session_state.strava_meta and st.session_state.strava_segment_id:
                 m = st.session_state.strava_meta
@@ -623,77 +697,119 @@ def main() -> None:
                 )
                 use_strava = st.checkbox(
                     "Use this Strava segment instead of GPX",
-                    value=False,
                     key="use_strava_segment",
                 )
 
+        # Preview-center Windy when a custom GPX is uploaded (before Run)
+        if uploaded is not None and not use_sample and not use_strava:
+            gpx_bytes = uploaded.getvalue()
+            digest = hashlib.sha1(gpx_bytes).hexdigest()
+            if st.session_state.get("_gpx_center_digest") != digest:
+                try:
+                    preview = parse_gpx(gpx_bytes)
+                    mid_lat, mid_lon = preview.midpoint()
+                    st.session_state._gpx_center_digest = digest
+                    if _pin_needs_recenter(mid_lat, mid_lon):
+                        _queue_map_center(mid_lat, mid_lon)
+                        st.rerun()
+                except Exception:  # noqa: BLE001 — keep form usable if GPX is bad
+                    st.session_state._gpx_center_digest = digest
+
         run = st.button("Run prediction", type="primary")
 
-    if not run:
+    last_run = st.session_state.get("_last_run")
+    if not run and not last_run:
         st.info("Adjust the wind pin, rider setup, and GPX — then run prediction.")
         return
 
-    target_time_s: float | None = None
-    try:
-        target_time_s = parse_target_time(target_raw)
-    except ValueError as exc:
-        st.error(f"Target time: {exc}")
-        return
+    if run:
+        target_time_s: float | None = None
+        try:
+            target_time_s = parse_target_time(target_raw)
+        except ValueError as exc:
+            st.error(f"Target time: {exc}")
+            return
 
-    try:
-        if use_strava and st.session_state.strava_segment_id and token:
-            client = StravaClient(strava_cfg, access_token=token)
-            meta, route = client.load_segment_route(int(st.session_state.strava_segment_id))
-            st.session_state.strava_meta = {
-                "segment_id": meta.segment_id,
-                "name": meta.name,
-                "distance_m": meta.distance_m,
-                "average_grade": meta.average_grade,
-                "from_cache": meta.from_cache,
-            }
-            source_label = f"Strava: {meta.name} ({meta.segment_id})"
-        elif uploaded is not None and not use_sample:
-            route = parse_gpx(uploaded.getvalue())
-            source_label = uploaded.name
-        else:
-            route = parse_gpx(FIXTURE)
-            source_label = FIXTURE.name
-    except StravaRateLimitError as exc:
-        st.error(exc.status.message or str(exc))
-        return
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"Could not load route: {exc}")
-        return
+        try:
+            if use_strava and st.session_state.strava_segment_id and token:
+                client = StravaClient(strava_cfg, access_token=token)
+                meta, route = client.load_segment_route(int(st.session_state.strava_segment_id))
+                st.session_state.strava_meta = {
+                    "segment_id": meta.segment_id,
+                    "name": meta.name,
+                    "distance_m": meta.distance_m,
+                    "average_grade": meta.average_grade,
+                    "from_cache": meta.from_cache,
+                }
+                source_label = f"Strava: {meta.name} ({meta.segment_id})"
+            elif uploaded is not None and not use_sample:
+                route = parse_gpx(uploaded.getvalue())
+                source_label = uploaded.name
+            else:
+                route = parse_gpx(FIXTURE)
+                source_label = FIXTURE.name
+        except StravaRateLimitError as exc:
+            st.error(exc.status.message or str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Could not load route: {exc}")
+            return
 
-    route = downsample_route(route, max_points=300)
-    params = RiderBikeParams(
-        rider_mass_kg=float(st.session_state.rider_kg),
-        power_w=float(power_w),
-        bike_mass_kg=aero.bike_mass_kg,
-        cd=aero.cd,
-        area_m2=aero.area_m2,
-    )
-    wind_z = standing_height_to_wind_z_m(float(st.session_state.height_cm))
-
-    with st.spinner("Fetching forecast and solving speeds…"):
-        when_dt = when if isinstance(when, datetime) else datetime.combine(when, datetime.min.time())
-        if when_dt.tzinfo is None:
-            when_dt = when_dt.replace(tzinfo=timezone.utc)
-        result = predict_speeds(
-            route,
-            params,
-            when_dt,
-            wind_height_m=wind_z,
-            target_time_s=target_time_s,
-            prefer_hrrr=prefer_hrrr,
+        route = downsample_route(route, max_points=300)
+        params = RiderBikeParams(
+            rider_mass_kg=float(st.session_state.rider_kg),
+            power_w=float(power_w),
+            bike_mass_kg=aero.bike_mass_kg,
+            cd=aero.cd,
+            area_m2=aero.area_m2,
         )
+        wind_z = standing_height_to_wind_z_m(float(st.session_state.height_cm))
+
+        with st.spinner("Fetching forecast and solving speeds…"):
+            when_dt = when if isinstance(when, datetime) else datetime.combine(when, datetime.min.time())
+            if when_dt.tzinfo is None:
+                when_dt = when_dt.replace(tzinfo=timezone.utc)
+            result = predict_speeds(
+                route,
+                params,
+                when_dt,
+                wind_height_m=wind_z,
+                target_time_s=target_time_s,
+                prefer_hrrr=prefer_hrrr,
+            )
+
+        mid_lat, mid_lon = route.midpoint()
+        st.session_state._last_run = {
+            "result": result,
+            "source_label": source_label,
+            "route_km": route.distances_m[-1] / 1000.0,
+            "route_n": len(route),
+            "position_key": aero.position_key,
+            "cda": aero.cd * aero.area_m2,
+        }
+        if _pin_needs_recenter(mid_lat, mid_lon):
+            _queue_map_center(mid_lat, mid_lon)
+            st.rerun()
+
+        source_label_out = source_label
+        route_km = route.distances_m[-1] / 1000.0
+        route_n = len(route)
+        position_key_out = aero.position_key
+        cda_out = aero.cd * aero.area_m2
+    else:
+        result = last_run["result"]
+        source_label_out = last_run["source_label"]
+        route_km = last_run["route_km"]
+        route_n = last_run["route_n"]
+        position_key_out = last_run["position_key"]
+        cda_out = last_run["cda"]
 
     # --- Card 3: Route wind-colored map ---
     with st.container(border=True):
         st.subheader("Route map")
         st.caption(
             "Route colored teal (tailwind) → red (headwind). "
-            f"{source_label} · {route.distances_m[-1]/1000:.1f} km"
+            f"{source_label_out} · {route_km:.1f} km"
         )
         try:
             fmap = build_wind_route_map(
@@ -718,8 +834,8 @@ def main() -> None:
     with st.container(border=True):
         st.subheader("Results")
         st.caption(
-            f"{POSITION_PRESETS[aero.position_key].label} · Cd·A={aero.cd * aero.area_m2:.3f} · "
-            f"{len(route)} points"
+            f"{POSITION_PRESETS[position_key_out].label} · Cd·A={cda_out:.3f} · "
+            f"{route_n} points"
         )
         st.info(
             "Decision aid, not a fortune teller. Forecast accuracy degrades past day 5; "

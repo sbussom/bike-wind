@@ -47,6 +47,8 @@ class SegmentMeta:
     elev_low: float | None = None
     elev_high: float | None = None
     from_cache: bool = False
+    start_lat: float | None = None
+    start_lon: float | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +149,9 @@ class StravaClient:
                     from_cache=True,
                 )
         data = self._get(f"/segments/{segment_id}")
+        start = data.get("start_latlng") or []
+        start_lat = float(start[0]) if len(start) >= 2 else None
+        start_lon = float(start[1]) if len(start) >= 2 else None
         return SegmentMeta(
             segment_id=int(data["id"]),
             name=str(data.get("name") or f"Segment {segment_id}"),
@@ -155,6 +160,8 @@ class StravaClient:
             elev_low=_opt_float(data.get("elevation_low")),
             elev_high=_opt_float(data.get("elevation_high")),
             from_cache=False,
+            start_lat=start_lat,
+            start_lon=start_lon,
         )
 
     def load_segment_route(

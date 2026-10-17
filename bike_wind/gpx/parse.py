@@ -39,6 +39,14 @@ class RouteStreams:
     def __len__(self) -> int:
         return len(self.lats)
 
+    def midpoint(self) -> tuple[float, float]:
+        """Return (lat, lon) at the middle track point (for map pin centering)."""
+        n = len(self.lats)
+        if n == 0:
+            raise ValueError("empty route")
+        i = (n - 1) // 2
+        return float(self.lats[i]), float(self.lons[i])
+
     @property
     def points(self) -> list[RoutePoint]:
         return [

@@ -22,3 +22,14 @@ def test_parse_from_bytes() -> None:
     data = FIXTURE.read_bytes()
     route = parse_gpx(data)
     assert len(route) >= 5
+
+
+def test_route_midpoint() -> None:
+    route = parse_gpx(FIXTURE)
+    lat, lon = route.midpoint()
+    assert 26.0 < lat < 27.0
+    assert -81.0 < lon < -79.0
+    # Mid index point should match streams
+    i = (len(route) - 1) // 2
+    assert lat == route.lats[i]
+    assert lon == route.lons[i]
