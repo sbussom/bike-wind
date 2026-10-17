@@ -102,6 +102,24 @@ def test_auth_error_without_token(tmp_path: Path) -> None:
         client.get_segment_meta(1, use_cache=False)
 
 
+def test_list_starred(tmp_path: Path) -> None:
+    session = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = [
+        {"id": 101, "name": "Bridge", "distance": 2500.0, "average_grade": 1.2},
+        {"id": 202, "name": "Climb", "distance": 800.0, "average_grade": 6.5},
+    ]
+    session.get.return_value = resp
+    client = StravaClient(_config(tmp_path), session=session)
+    starred = client.list_starred()
+    assert len(starred) == 2
+    assert starred[0].segment_id == 101
+    assert starred[0].name == "Bridge"
+    assert starred[1].distance_m == 800.0
+    assert session.get.call_args[0][0].endswith("/segments/starred")
+
+
 def test_explore_gated_without_flag(tmp_path: Path) -> None:
     client = StravaClient(_config(tmp_path, extended_access=False))
     with pytest.raises(StravaError, match="Extended Access"):

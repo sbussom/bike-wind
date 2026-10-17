@@ -2,7 +2,7 @@
 
 Predict ground speed on a road segment under forecast wind: local Windy overview → GPX → Open-Meteo (optional HRRR) → physics → route map + chart.
 
-Phases 0–5 shipped. **Current UI:** Windy wind map at top (SE Florida default), GPX primary; Strava segment URL/ID is optional/collapsed (OAuth paused).
+Phases 0–5 shipped. **Current UI:** Windy wind map at top (SE Florida default), GPX primary; Strava optional (segment URL/ID, starred/saved segments when a token is present, Connect Strava if OAuth secrets are set).
 
 ## Setup
 
@@ -36,7 +36,7 @@ Each setting is read from **env first**, then `st.secrets` of the same name (Str
 
 | Key | Purpose |
 | --- | --- |
-| `STRAVA_ACCESS_TOKEN` | Segment URL/ID + streams without OAuth UI |
+| `STRAVA_ACCESS_TOKEN` | Segment URL/ID, starred list, and streams without OAuth UI |
 | `STRAVA_CLIENT_ID` | OAuth app client id |
 | `STRAVA_CLIENT_SECRET` | OAuth app client secret |
 | `STRAVA_REDIRECT_URI` | Must match Strava callback (Cloud app root URL) |
