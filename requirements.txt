@@ -1,3 +1,6 @@
+# Editable install so Streamlit Cloud always uses repo `bike_wind/`,
+# not a stale copy previously installed into site-packages.
+-e .
 numpy>=1.26
 requests>=2.31
 streamlit>=1.32

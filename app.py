@@ -38,7 +38,19 @@ from bike_wind.rider import (
     smart_default_height_cm,
     standing_height_to_wind_z_m,
 )
-from bike_wind.settings import strava_secrets_presence
+try:
+    from bike_wind.settings import strava_secrets_presence
+except ImportError:  # pragma: no cover — stale site-packages on Cloud
+
+    def strava_secrets_presence():
+        return {
+            "CLIENT_ID": False,
+            "CLIENT_SECRET": False,
+            "REDIRECT_URI": False,
+            "ACCESS_TOKEN": False,
+        }
+
+
 from bike_wind.strava import (
     StravaAuthError,
     StravaClient,
