@@ -55,9 +55,10 @@ Live app: https://bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app
 STRAVA_CLIENT_ID = "your_client_id"
 STRAVA_CLIENT_SECRET = "your_client_secret"
 STRAVA_REDIRECT_URI = "https://bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app"
+# or nested: [strava] CLIENT_ID / CLIENT_SECRET / REDIRECT_URI / ACCESS_TOKEN
 ```
 
-3. Reboot the app → Route source **Strava segment** → **Connect Strava**.
+3. **Reboot** the app after saving secrets → **Strava (optional)** → **Connect Strava** (or ACCESS_TOKEN). If still missing, the expander shows set/missing diagnostics (no secret values).
 
 **Privacy:** Strava payloads/tokens are never sent to LLMs and are not application-logged. Caches live under `.cache/` (or `BIKE_WIND_CACHE`).
 

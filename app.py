@@ -38,6 +38,7 @@ from bike_wind.rider import (
     smart_default_height_cm,
     standing_height_to_wind_z_m,
 )
+from bike_wind.settings import strava_secrets_presence
 from bike_wind.strava import (
     StravaAuthError,
     StravaClient,
@@ -545,6 +546,14 @@ def main() -> None:
                     "No token yet — set `STRAVA_ACCESS_TOKEN` in secrets, or "
                     "`STRAVA_CLIENT_ID` / `SECRET` / `REDIRECT_URI` for Connect Strava. "
                     "GPX still works."
+                )
+                presence = strava_secrets_presence()
+                st.caption(
+                    "Secrets seen by app (set/missing only — reboot after saving):  \n"
+                    f"`CLIENT_ID`: {'set' if presence['CLIENT_ID'] else 'missing'} · "
+                    f"`CLIENT_SECRET`: {'set' if presence['CLIENT_SECRET'] else 'missing'} · "
+                    f"`REDIRECT_URI`: {'set' if presence['REDIRECT_URI'] else 'missing'} · "
+                    f"`ACCESS_TOKEN`: {'set' if presence['ACCESS_TOKEN'] else 'missing'}"
                 )
 
             strava_ref_text = st.text_input(
