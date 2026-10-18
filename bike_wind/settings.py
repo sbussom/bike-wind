@@ -55,6 +55,61 @@ def strava_secrets_presence() -> dict[str, bool]:
     }
 
 
+def strava_secrets_debug() -> dict[str, Any]:
+    """Safe secrets shape for UI diagnostics — never includes values.
+
+    Returns:
+      available: whether ``st.secrets`` could be opened
+      keys: top-level key names, plus ``strava.<child>`` for nested tables
+    """
+    available, keys = _secret_key_names()
+    return {"available": available, "keys": keys}
+
+
+def _secret_key_names() -> tuple[bool, list[str]]:
+    """List secret key names only (no values)."""
+    try:
+        import streamlit as st
+    except Exception:  # noqa: BLE001
+        return False, []
+    try:
+        secrets = st.secrets
+    except Exception:  # noqa: BLE001
+        return False, []
+
+    names: list[str] = []
+    top = _iter_keys(secrets)
+    for key in top:
+        names.append(str(key))
+        if str(key).lower() == "strava":
+            section = _lookup_mapping(secrets, str(key))
+            for child in _iter_keys(section):
+                names.append(f"strava.{child}")
+    # Stable, unique, short
+    seen: set[str] = set()
+    out: list[str] = []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return True, out
+
+
+def _iter_keys(container: Any) -> list[str]:
+    """Best-effort key listing for dict / AttrDict / Secrets."""
+    if container is None:
+        return []
+    try:
+        keys = list(container.keys())  # type: ignore[attr-defined]
+        return [str(k) for k in keys]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return [str(k) for k in list(container)]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _secret_get(name: str) -> Any | None:
     """Read one key from ``st.secrets`` without relying on ``key in secrets``.
 

@@ -12,6 +12,7 @@ from bike_wind.settings import (
     _secret_get,
     get_bool_setting,
     get_setting,
+    strava_secrets_debug,
     strava_secrets_presence,
 )
 from bike_wind.strava.client import load_strava_config
@@ -205,6 +206,44 @@ def test_strava_secrets_presence_booleans_only(monkeypatch: pytest.MonkeyPatch) 
     }
     # Ensure no secret values leaked into the dict
     assert all(isinstance(v, bool) for v in presence.values())
+
+
+def test_strava_secrets_debug_lists_keys_not_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_st = SimpleNamespace(
+        secrets={
+            "STRAVA_CLIENT_ID": "do-not-leak",
+            "other": "x",
+            "strava": {"CLIENT_ID": "also-secret", "ACCESS_TOKEN": "tok"},
+        }
+    )
+    with patch.dict("sys.modules", {"streamlit": fake_st}):
+        dbg = strava_secrets_debug()
+    assert dbg["available"] is True
+    assert "STRAVA_CLIENT_ID" in dbg["keys"]
+    assert "other" in dbg["keys"]
+    assert "strava" in dbg["keys"]
+    assert "strava.CLIENT_ID" in dbg["keys"]
+    assert "strava.ACCESS_TOKEN" in dbg["keys"]
+    # No values anywhere in the payload
+    blob = str(dbg)
+    assert "do-not-leak" not in blob
+    assert "also-secret" not in blob
+    assert "tok" not in blob
+
+
+def test_strava_secrets_debug_unavailable_when_no_streamlit() -> None:
+    real_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "streamlit":
+            raise ImportError("no streamlit")
+        return real_import(name, *args, **kwargs)
+
+    with patch("builtins.__import__", side_effect=fake_import):
+        dbg = strava_secrets_debug()
+    assert dbg == {"available": False, "keys": []}
 
 
 def test_load_strava_config_nested_short_aliases(

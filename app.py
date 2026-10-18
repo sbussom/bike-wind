@@ -39,7 +39,7 @@ from bike_wind.rider import (
     standing_height_to_wind_z_m,
 )
 try:
-    from bike_wind.settings import strava_secrets_presence
+    from bike_wind.settings import strava_secrets_debug, strava_secrets_presence
 except ImportError:  # pragma: no cover — stale site-packages on Cloud
 
     def strava_secrets_presence():
@@ -49,6 +49,9 @@ except ImportError:  # pragma: no cover — stale site-packages on Cloud
             "REDIRECT_URI": False,
             "ACCESS_TOKEN": False,
         }
+
+    def strava_secrets_debug():
+        return {"available": False, "keys": []}
 
 
 from bike_wind.strava import (
@@ -560,8 +563,13 @@ def main() -> None:
                     "GPX still works."
                 )
                 presence = strava_secrets_presence()
+                dbg = strava_secrets_debug()
+                key_list = ", ".join(f"`{k}`" for k in dbg["keys"]) if dbg["keys"] else "(none)"
                 st.caption(
-                    "Secrets seen by app (set/missing only — reboot after saving):  \n"
+                    "Secrets diagnostic (reboot after saving; keys must be "
+                    "`STRAVA_CLIENT_ID` / `SECRET` / `REDIRECT_URI` / `ACCESS_TOKEN`):  \n"
+                    f"`st.secrets` available: {'yes' if dbg['available'] else 'no'} · "
+                    f"key names: {key_list}  \n"
                     f"`CLIENT_ID`: {'set' if presence['CLIENT_ID'] else 'missing'} · "
                     f"`CLIENT_SECRET`: {'set' if presence['CLIENT_SECRET'] else 'missing'} · "
                     f"`REDIRECT_URI`: {'set' if presence['REDIRECT_URI'] else 'missing'} · "
