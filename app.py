@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -24,6 +25,12 @@ from bike_wind.local_wind_map import (
     windy_iframe_html,
 )
 from bike_wind.map_view import MAP_MIN_HEIGHT_PX, build_wind_route_map
+from bike_wind.nearby_map import (
+    NEARBY_MAP_HEIGHT_PX,
+    bounds_around,
+    build_nearby_segments_map,
+    geolocation_redirect_html,
+)
 from bike_wind.physics import RiderBikeParams
 from bike_wind.predict import downsample_route, predict_speeds
 from bike_wind.rider import (
@@ -55,6 +62,7 @@ except ImportError:  # pragma: no cover — stale site-packages on Cloud
 
 
 from bike_wind.strava import (
+    ExploreHit,
     StravaAuthError,
     StravaClient,
     StravaRateLimitError,
@@ -62,6 +70,8 @@ from bike_wind.strava import (
 )
 from bike_wind.strava.oauth import build_authorize_url, exchange_code
 from bike_wind.weather import hrrr_enabled_by_env
+
+EXPLORE_CACHE_TTL_S = 300.0
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sample_route.gpx"
 
@@ -213,10 +223,14 @@ def _init_state() -> None:
         st.session_state.strava_access_token = None
     if "strava_refresh_token" not in st.session_state:
         st.session_state.strava_refresh_token = None
-    if "starred_segments" not in st.session_state:
-        st.session_state.starred_segments = None
     if "use_strava_segment" not in st.session_state:
         st.session_state.use_strava_segment = False
+    if "explore_hits" not in st.session_state:
+        st.session_state.explore_hits = []
+    if "explore_cache" not in st.session_state:
+        st.session_state.explore_cache = {}
+    if "location_source" not in st.session_state:
+        st.session_state.location_source = "default"
     if "map_lat" not in st.session_state:
         st.session_state.map_lat = DEFAULT_LAT
     if "map_lon" not in st.session_state:
@@ -270,7 +284,8 @@ def _handle_oauth_callback(config) -> None:
         )
         st.session_state.strava_access_token = tokens.access_token
         st.session_state.strava_refresh_token = tokens.refresh_token
-        st.session_state.starred_segments = None  # reload under the new account
+        st.session_state.explore_hits = []
+        st.session_state.explore_cache = {}
         st.session_state._oauth_handled_code = code
         try:
             del st.query_params["code"]
@@ -288,27 +303,57 @@ def _handle_oauth_callback(config) -> None:
 def _on_disconnect_strava() -> None:
     st.session_state.strava_access_token = None
     st.session_state.strava_refresh_token = None
-    st.session_state.starred_segments = None
+    st.session_state.explore_hits = []
+    st.session_state.explore_cache = {}
     st.session_state.use_strava_segment = False
 
 
-def _load_starred_into_state(client: StravaClient) -> int:
-    """Fetch all starred pages into session_state. Returns count."""
-    starred = client.list_starred()
-    st.session_state.starred_segments = [
-        {
-            "id": s.segment_id,
-            "label": (
-                f"{s.name} ({s.distance_m/1000:.1f} km, "
-                f"{s.average_grade:.1f}%)"
-            ),
-            "distance_m": s.distance_m,
-            "average_grade": s.average_grade,
-            "name": s.name,
-        }
-        for s in starred
-    ]
-    return len(st.session_state.starred_segments)
+def _queue_map_center(lat: float, lon: float) -> None:
+    """Queue a pin update for the next render (before lat/lon widgets exist)."""
+    st.session_state._pending_map_center = (round(float(lat), 4), round(float(lon), 4))
+
+
+def _apply_geo_query_params() -> None:
+    """Read ?geo_lat=&geo_lon= from the geolocation button (before widgets)."""
+    params = st.query_params
+    raw_lat, raw_lon = params.get("geo_lat"), params.get("geo_lon")
+    if raw_lat is None or raw_lon is None:
+        return
+    try:
+        lat, lon = float(raw_lat), float(raw_lon)
+    except (TypeError, ValueError):
+        return
+    if not (-85.0 <= lat <= 85.0 and -180.0 <= lon <= 180.0):
+        return
+    _queue_map_center(lat, lon)
+    st.session_state.location_source = "geolocation"
+    st.session_state.explore_cache = {}
+    try:
+        del st.query_params["geo_lat"]
+        del st.query_params["geo_lon"]
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _fetch_nearby_explore(
+    client: StravaClient,
+    lat: float,
+    lon: float,
+) -> list[ExploreHit]:
+    """Explore around pin with a short session cache to spare rate limits."""
+    bounds = bounds_around(lat, lon)
+    key = tuple(round(b, 3) for b in bounds)
+    cache = st.session_state.explore_cache
+    now = time.time()
+    hit = cache.get(key)
+    if hit and now - hit["ts"] < EXPLORE_CACHE_TTL_S:
+        st.session_state.explore_hits = hit["hits"]
+        return hit["hits"]
+    hits = client.explore(bounds)
+    cache[key] = {"ts": now, "hits": hits}
+    st.session_state.explore_cache = cache
+    st.session_state.explore_hits = hits
+    return hits
 
 
 def _on_reset_map_location() -> None:
@@ -317,11 +362,8 @@ def _on_reset_map_location() -> None:
     st.session_state.map_lat_input = DEFAULT_LAT
     st.session_state.map_lon_input = DEFAULT_LON
     st.session_state._pin_auto_centered = False
-
-
-def _queue_map_center(lat: float, lon: float) -> None:
-    """Queue a pin update for the next render (before lat/lon widgets exist)."""
-    st.session_state._pending_map_center = (round(float(lat), 4), round(float(lon), 4))
+    st.session_state.location_source = "default"
+    st.session_state.explore_cache = {}
 
 
 def _apply_pending_map_center() -> bool:
@@ -428,6 +470,7 @@ def _on_reset_bike_mass() -> None:
 
 def main() -> None:
     _init_state()
+    _apply_geo_query_params()
     _apply_pending_map_center()
 
     top_l, top_r = st.columns([4, 1])
@@ -472,13 +515,23 @@ def main() -> None:
     target_raw = ""
     when = default_dt
 
-    # Desktop: map left · segment + rider right. Mobile stacks left→right.
+    # Desktop: nearby map left · segment + rider right. Mobile stacks left→right.
     left_col, right_col = st.columns([1.35, 1], gap="large")
 
     with left_col:
         with st.container(border=True):
-            st.html('<p class="bw-section-label">Wind map</p>')
+            st.html('<p class="bw-section-label">Nearby segments</p>')
             when = st.datetime_input("Ride datetime (UTC)", value=default_dt)
+
+            loc_note = {
+                "geolocation": "Centered on your browser location.",
+                "default": "Centered on South Florida default — use my location or set the pin.",
+            }.get(st.session_state.location_source, "Map center from pin.")
+            if st.session_state.get("_pin_auto_centered"):
+                loc_note = "Centered on the loaded route midpoint."
+            st.caption(loc_note)
+
+            components.html(geolocation_redirect_html(), height=72)
 
             pin = fetch_pin_wind(map_lat, map_lon)
             if pin is not None:
@@ -489,17 +542,79 @@ def main() -> None:
                     m3.metric("Temp", f"{pin.temperature_c * 9 / 5 + 32:.0f} °F")
                 else:
                     m3.metric("Temp", "—")
+
+            nearby: list[ExploreHit] = list(st.session_state.get("explore_hits") or [])
+            if token and strava_cfg.extended_access:
+                c1, c2 = st.columns(2)
+                with c1:
+                    do_explore = st.button(
+                        "Find nearby segments",
+                        key="explore_nearby_btn",
+                        use_container_width=True,
+                    )
+                with c2:
+                    st.caption("Uses Strava explore in a ~10 km box.")
+                if do_explore:
+                    try:
+                        client = StravaClient(strava_cfg, access_token=token)
+                        nearby = _fetch_nearby_explore(client, map_lat, map_lon)
+                        st.session_state.explore_hits = nearby
+                    except StravaRateLimitError as exc:
+                        st.error(exc.status.message or str(exc))
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"Explore failed: {exc}")
+            elif token and not strava_cfg.extended_access:
+                st.caption(
+                    "Nearby map needs `STRAVA_EXTENDED_ACCESS=true` (Strava Explore "
+                    "approval) plus a token."
+                )
             else:
-                st.caption("Pin wind sample unavailable — map still loads.")
+                st.caption("Connect Strava (and enable Explore) to plot nearby segments.")
 
-            windy_h = max(WINDY_EMBED_HEIGHT_PX, 380)
-            components.html(
-                windy_iframe_html(map_lat, map_lon, height_px=windy_h),
-                height=windy_h + 8,
-                scrolling=False,
-            )
+            try:
+                nearby_map = build_nearby_segments_map(
+                    map_lat,
+                    map_lon,
+                    nearby,
+                    dark=dark,
+                    height_px=NEARBY_MAP_HEIGHT_PX,
+                )
+                st_folium(
+                    nearby_map,
+                    width=None,
+                    height=NEARBY_MAP_HEIGHT_PX,
+                    returned_objects=[],
+                    use_container_width=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                st.warning(f"Nearby map unavailable: {exc}")
 
-            with st.expander("Map pin", expanded=False):
+            if nearby:
+                st.caption(f"{len(nearby)} nearby (Strava explore top results)")
+                labels_n = [
+                    f"{h.name} ({h.distance_m/1000:.1f} km, {h.average_grade:.1f}%) · {h.segment_id}"
+                    for h in nearby
+                ]
+                pick = st.selectbox(
+                    "Select a nearby segment",
+                    options=["(none)"] + labels_n,
+                    key="nearby_pick",
+                )
+                if pick != "(none)":
+                    chosen = nearby[labels_n.index(pick)]
+                    _select_strava_segment(
+                        chosen.segment_id,
+                        name=chosen.name,
+                        distance_m=chosen.distance_m,
+                        average_grade=chosen.average_grade,
+                        start_lat=chosen.start_lat,
+                        start_lon=chosen.start_lon,
+                    )
+                    st.markdown(
+                        f"[Open on Strava](https://www.strava.com/segments/{chosen.segment_id})"
+                    )
+
+            with st.expander("Map pin & Windy overlay", expanded=False):
                 loc1, loc2, loc3 = st.columns([1, 1, 1])
                 with loc1:
                     st.number_input(
@@ -527,7 +642,15 @@ def main() -> None:
                         on_click=_on_reset_map_location,
                         use_container_width=True,
                     )
-                st.caption("Pin auto-centers on the loaded route after you run.")
+                components.html(
+                    windy_iframe_html(
+                        float(st.session_state.map_lat_input),
+                        float(st.session_state.map_lon_input),
+                        height_px=WINDY_EMBED_HEIGHT_PX,
+                    ),
+                    height=WINDY_EMBED_HEIGHT_PX + 8,
+                    scrolling=False,
+                )
 
     with right_col:
         # --- Enter segment (top of right column) ---
@@ -544,8 +667,8 @@ def main() -> None:
                 )
             elif tok_src == "secrets":
                 st.caption(
-                    "Using the **app owner's** token — Connect Strava to load "
-                    "**your** starred segments instead."
+                    "Using the **app owner's** token. Connect Strava to use yours "
+                    "for explore / segment loads."
                 )
             else:
                 st.caption("Connect Strava or paste a segment ID. GPX still works.")
@@ -561,54 +684,14 @@ def main() -> None:
                     use_container_width=True,
                 )
                 st.caption(
-                    "Authorization Callback Domain / redirect URI must be "
+                    "Redirect URI must be "
                     f"`{strava_cfg.redirect_uri}` in your Strava API app."
                 )
             elif not strava_cfg.oauth_ready and tok_src == "none":
                 st.caption(
                     "Owner: set `client_id` / `client_secret` / `redirect_uri` "
-                    "in secrets to enable Connect for visitors."
+                    "in secrets to enable Connect."
                 )
-
-            if token:
-                if st.button("Load starred segments", key="refresh_starred"):
-                    try:
-                        client = StravaClient(strava_cfg, access_token=token)
-                        n = _load_starred_into_state(client)
-                        st.success(f"Loaded {n} starred segment{'s' if n != 1 else ''}.")
-                    except StravaRateLimitError as exc:
-                        st.error(exc.status.message or str(exc))
-                    except Exception as exc:  # noqa: BLE001
-                        st.error(f"Starred fetch failed: {exc}")
-
-                starred = st.session_state.starred_segments
-                if starred:
-                    st.caption(f"{len(starred)} starred")
-                    labels_s = [s["label"] for s in starred]
-                    picked = st.selectbox(
-                        "Starred segment",
-                        options=["(none)"] + labels_s,
-                        key="starred_pick",
-                    )
-                    if picked == "(none)":
-                        if st.session_state.get("use_strava_segment") and st.session_state.get(
-                            "strava_segment_id"
-                        ):
-                            starred_ids = {s["id"] for s in starred}
-                            if st.session_state.strava_segment_id in starred_ids:
-                                st.session_state.use_strava_segment = False
-                    else:
-                        chosen = next(s for s in starred if s["label"] == picked)
-                        _select_strava_segment(
-                            int(chosen["id"]),
-                            name=str(chosen.get("name") or picked.split(" (")[0]),
-                            distance_m=float(chosen.get("distance_m") or 0.0),
-                            average_grade=float(chosen.get("average_grade") or 0.0),
-                        )
-                elif starred is None:
-                    st.caption("Load starred to pick one (all pages fetched).")
-                else:
-                    st.caption("No starred segments returned.")
 
             strava_ref_text = st.text_input(
                 "Segment URL or ID",
@@ -663,14 +746,14 @@ def main() -> None:
                 "Upload GPX",
                 type=["gpx"],
                 help=(
-                    "Use a GPX when you have a full ride/route export, or the "
-                    "segment isn’t in Strava/starred. Prefer starred or a "
-                    "segment ID when available."
+                    "Use a GPX for a full ride/route export, or when the segment "
+                    "isn’t on Strava. Prefer a segment ID or a nearby map pick "
+                    "when available."
                 ),
             )
             st.caption(
                 "GPX: full ride or route export, or when the segment isn’t on "
-                "Strava. Starred / segment ID preferred when you have them."
+                "Strava. Prefer nearby map pick or segment ID when you have them."
             )
 
         # --- Rider (below segment on the right) ---
@@ -793,63 +876,6 @@ def main() -> None:
                     value=hrrr_enabled_by_env(),
                     key="prefer_hrrr_toggle",
                 )
-
-                with st.expander("Explore Segments", expanded=False):
-                    if not strava_cfg.extended_access:
-                        st.caption("Requires `STRAVA_EXTENDED_ACCESS=true`.")
-                    elif not token:
-                        st.caption("Needs a Strava token.")
-                    else:
-                        b1, b2, b3, b4 = st.columns(4)
-                        sw_lat = b1.number_input("SW lat", value=26.05, format="%.4f")
-                        sw_lon = b2.number_input("SW lon", value=-80.20, format="%.4f")
-                        ne_lat = b3.number_input("NE lat", value=26.25, format="%.4f")
-                        ne_lon = b4.number_input("NE lon", value=-80.05, format="%.4f")
-                        if st.button("Explore top 10", key="explore_btn"):
-                            try:
-                                client = StravaClient(strava_cfg, access_token=token)
-                                hits = client.explore(
-                                    [sw_lat, sw_lon, ne_lat, ne_lon]
-                                )
-                                st.session_state.explore_hits = [
-                                    {
-                                        "id": h.segment_id,
-                                        "label": (
-                                            f"{h.name} ({h.distance_m/1000:.1f} km, "
-                                            f"{h.average_grade:.1f}%)"
-                                        ),
-                                        "name": h.name,
-                                        "distance_m": h.distance_m,
-                                        "average_grade": h.average_grade,
-                                    }
-                                    for h in hits
-                                ]
-                            except Exception as exc:  # noqa: BLE001
-                                st.error(f"Explore failed: {exc}")
-                        explore = st.session_state.get("explore_hits") or []
-                        if explore:
-                            elabels = [h["label"] for h in explore]
-                            epick = st.radio(
-                                "Explored segment",
-                                options=["(none)"] + elabels,
-                                key="explore_pick",
-                            )
-                            if epick != "(none)":
-                                chosen = next(
-                                    h for h in explore if h["label"] == epick
-                                )
-                                _select_strava_segment(
-                                    int(chosen["id"]),
-                                    name=str(
-                                        chosen.get("name") or epick.split(" (")[0]
-                                    ),
-                                    distance_m=float(
-                                        chosen.get("distance_m") or 0.0
-                                    ),
-                                    average_grade=float(
-                                        chosen.get("average_grade") or 0.0
-                                    ),
-                                )
 
                 if tok_src == "none" and not strava_cfg.oauth_ready:
                     with st.expander("Secrets diagnostic", expanded=False):

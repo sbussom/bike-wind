@@ -200,6 +200,8 @@ def test_explore_top_10_with_flag(tmp_path: Path) -> None:
                 "avg_grade": 1.0,
                 "climb_category": 0,
                 "starred": False,
+                "start_latlng": [26.1 + i * 0.001, -80.1],
+                "end_latlng": [26.11 + i * 0.001, -80.09],
             }
             for i in range(12)
         ]
@@ -208,6 +210,8 @@ def test_explore_top_10_with_flag(tmp_path: Path) -> None:
     client = StravaClient(_config(tmp_path, extended_access=True), session=session)
     hits = client.explore([26.0, -80.2, 26.2, -80.0])
     assert len(hits) == 10
+    assert hits[0].start_lat == pytest.approx(26.1)
+    assert hits[0].end_lon == pytest.approx(-80.09)
 
 
 def test_rate_limiter_blocks(tmp_path: Path) -> None:

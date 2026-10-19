@@ -67,6 +67,10 @@ class ExploreHit:
     average_grade: float
     climb_category: int
     starred: bool
+    start_lat: float | None = None
+    start_lon: float | None = None
+    end_lat: float | None = None
+    end_lon: float | None = None
 
 
 class StravaError(RuntimeError):
@@ -265,14 +269,22 @@ class StravaClient:
             raise StravaError("Unexpected explore response")
         hits: list[ExploreHit] = []
         for item in segs[:10]:
+            start = item.get("start_latlng") or []
+            end = item.get("end_latlng") or []
             hits.append(
                 ExploreHit(
                     segment_id=int(item["id"]),
                     name=str(item.get("name") or item["id"]),
                     distance_m=float(item.get("distance") or 0.0),
-                    average_grade=float(item.get("avg_grade") or item.get("average_grade") or 0.0),
+                    average_grade=float(
+                        item.get("avg_grade") or item.get("average_grade") or 0.0
+                    ),
                     climb_category=int(item.get("climb_category") or 0),
                     starred=bool(item.get("starred")),
+                    start_lat=float(start[0]) if len(start) >= 2 else None,
+                    start_lon=float(start[1]) if len(start) >= 2 else None,
+                    end_lat=float(end[0]) if len(end) >= 2 else None,
+                    end_lon=float(end[1]) if len(end) >= 2 else None,
                 )
             )
         return hits

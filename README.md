@@ -2,7 +2,7 @@
 
 Predict ground speed on a road segment under forecast wind.
 
-**UI flow (desktop):** left = wind map; right = Enter segment (Strava Connect / starred / ID, then GPX) + rider. Results full-width below. Visitors **Connect with Strava** for their own starred list (session token); owner secrets token is fallback only.
+**UI flow (desktop):** left = nearby Strava segments map (geolocation / pin + explore); right = segment ID/URL + GPX + rider. Results full-width below. Connect with Strava (session token) for explore/segment loads; owner secrets token is fallback.
 
 ## Setup
 
@@ -36,11 +36,11 @@ Each setting is read from **env first**, then `st.secrets` of the same name (Str
 
 | Key | Purpose |
 | --- | --- |
-| `STRAVA_ACCESS_TOKEN` | Segment URL/ID, starred list, and streams without OAuth UI |
-| `STRAVA_CLIENT_ID` | OAuth app client id |
+| `STRAVA_ACCESS_TOKEN` | Segment URL/ID + streams without OAuth UI (owner fallback) |
+| `STRAVA_CLIENT_ID` | OAuth app client id (Connect with Strava) |
 | `STRAVA_CLIENT_SECRET` | OAuth app client secret |
 | `STRAVA_REDIRECT_URI` | Must match Strava callback (Cloud app root URL) |
-| `STRAVA_EXTENDED_ACCESS` | Default `false`. Set `true` to enable Explore Segments |
+| `STRAVA_EXTENDED_ACCESS` | Default `false`. Set `true` to enable nearby Explore map |
 | `BIKE_WIND_HRRR` | Default `false`. Set `true` so the HRRR UI toggle defaults on |
 | `BIKE_WIND_CACHE` | Root for SQLite caches (Strava + weather forecasts) |
 
