@@ -26,11 +26,18 @@ Starred-segment lists were removed from the UI.
 
 ## Access token expiry / refresh
 
-Strava access tokens expire. On HTTP 401 the app calls the OAuth **refresh_token** grant with secrets (or session) `client_id` / `client_secret` / `refresh_token`, then retries explore and segment loads.
+Strava access tokens expire. On HTTP 401 the app POSTs to `https://www.strava.com/oauth/token` with `grant_type=refresh_token`, `client_id`, `client_secret`, and `refresh_token` (from nested `[strava]` secrets or Connect session), then retries.
 
-- A successful refresh updates **`st.session_state` only** for this browser session.
-- **Streamlit Cloud secrets are read-only at runtime** — the app cannot write the new access token back into secrets. Paste updated tokens into secrets when you want them to survive reboots / cold starts.
-- If refresh also fails (dead or revoked refresh token): open https://www.strava.com/settings/api → copy a fresh **Access Token** (and **Refresh Token** if shown) → paste under `[strava]` as `access_token` / `refresh_token` → reboot the app. Or use **Connect with Strava**.
+- **Anonymous visitors use owner secrets first.** A broken Connect/OAuth session no longer blocks secrets.
+- When secrets change, sticky browser tokens are cleared automatically. Use **Reset Strava session** anytime after pasting new secrets.
+- A successful refresh updates **`st.session_state` only**. Streamlit Cloud secrets are **read-only** at runtime.
+- Failed refresh shows Strava’s `error` / `message` (tokens redacted), e.g. invalid refresh token after rotation.
+- Paste matching Access + Refresh from https://www.strava.com/settings/api under `[strava]`, then **Reset Strava session** (or reboot).
+
+## Scopes & Explore tier
+
+- OAuth / “Get Access Token” needs scope **`read`** (public segments). `activity:read` is not required for explore or public segment ID lookup.
+- Since **Sept 1, 2026**, `GET /segments/explore` also requires the app’s **Extended Access Tier** in the Strava API Settings Dashboard (not a Streamlit secret). Without it you get HTTP 403 on nearby explore; segment ID/URL and GPX still work.
 
 ## Strava API application
 

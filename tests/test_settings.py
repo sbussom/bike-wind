@@ -13,6 +13,7 @@ from bike_wind.settings import (
     get_bool_setting,
     get_setting,
     strava_secrets_debug,
+    strava_secrets_fingerprint,
     strava_secrets_presence,
 )
 from bike_wind.strava.client import load_strava_config
@@ -195,12 +196,11 @@ def test_strava_secrets_presence_booleans_only(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.delenv("STRAVA_ACCESS_TOKEN", raising=False)
     with patch("bike_wind.settings._secret_get", return_value=None):
         presence = strava_secrets_presence()
-    assert presence == {
-        "CLIENT_ID": True,
-        "CLIENT_SECRET": False,
-        "REDIRECT_URI": False,
-        "ACCESS_TOKEN": False,
-    }
+    assert presence["CLIENT_ID"] is True
+    assert presence["CLIENT_SECRET"] is False
+    assert presence["REDIRECT_URI"] is False
+    assert presence["ACCESS_TOKEN"] is False
+    assert presence["REFRESH_TOKEN"] is False
     # Ensure no secret values leaked into the dict
     assert all(isinstance(v, bool) for v in presence.values())
 
@@ -279,6 +279,21 @@ def test_secret_get_nested_lowercase_aliases(monkeypatch: pytest.MonkeyPatch) ->
         dbg = strava_secrets_debug()
         assert dbg["nested_strava"] is True
         assert "strava.access_token" in dbg["keys"]
+
+
+def test_strava_secrets_fingerprint_changes_when_refresh_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STRAVA_CLIENT_ID", "1")
+    monkeypatch.setenv("STRAVA_CLIENT_SECRET", "sec")
+    monkeypatch.setenv("STRAVA_ACCESS_TOKEN", "a1")
+    monkeypatch.setenv("STRAVA_REFRESH_TOKEN", "r1")
+    with patch("bike_wind.settings._secret_get", return_value=None):
+        fp1 = strava_secrets_fingerprint()
+    monkeypatch.setenv("STRAVA_REFRESH_TOKEN", "r2")
+    with patch("bike_wind.settings._secret_get", return_value=None):
+        fp2 = strava_secrets_fingerprint()
+    assert fp1 != fp2
 
 
 def test_load_strava_config_lowercase_nested_token(

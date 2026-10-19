@@ -74,7 +74,26 @@ def strava_secrets_presence() -> dict[str, bool]:
         "CLIENT_SECRET": bool(get_setting("STRAVA_CLIENT_SECRET")),
         "REDIRECT_URI": bool(get_setting("STRAVA_REDIRECT_URI")),
         "ACCESS_TOKEN": bool(get_setting("STRAVA_ACCESS_TOKEN")),
+        "REFRESH_TOKEN": bool(get_setting("STRAVA_REFRESH_TOKEN")),
     }
+
+
+def strava_secrets_fingerprint() -> str:
+    """Stable hash of resolved Strava secret *values* (for session invalidation only).
+
+    Never log or display the return value next to secret material; it is only used
+    to detect that Cloud secrets changed so sticky session tokens can be cleared.
+    """
+    import hashlib
+
+    parts = [
+        get_setting("STRAVA_CLIENT_ID") or "",
+        get_setting("STRAVA_CLIENT_SECRET") or "",
+        get_setting("STRAVA_ACCESS_TOKEN") or "",
+        get_setting("STRAVA_REFRESH_TOKEN") or "",
+        get_setting("STRAVA_REDIRECT_URI") or "",
+    ]
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:24]
 
 
 def strava_secrets_debug() -> dict[str, Any]:

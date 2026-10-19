@@ -6,7 +6,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from bike_wind.strava.oauth import exchange_code, refresh_access_token
+from bike_wind.strava.oauth import (
+    OAuthTokenError,
+    exchange_code,
+    refresh_access_token,
+    safe_oauth_error_detail,
+)
 
 
 def test_refresh_access_token_success() -> None:
@@ -20,7 +25,7 @@ def test_refresh_access_token_success() -> None:
     }
     session.post.return_value = resp
     tokens = refresh_access_token(
-        client_id="cid",
+        client_id="12345",
         client_secret="sec",
         refresh_token="r1",
         session=session,
@@ -31,20 +36,42 @@ def test_refresh_access_token_success() -> None:
     posted = session.post.call_args.kwargs["data"]
     assert posted["grant_type"] == "refresh_token"
     assert posted["refresh_token"] == "r1"
+    assert posted["client_id"] == 12345  # coerced to int
+    assert session.post.call_args.args[0] == "https://www.strava.com/oauth/token"
 
 
-def test_refresh_access_token_http_error() -> None:
+def test_refresh_access_token_surfaces_strava_error() -> None:
     session = MagicMock()
     resp = MagicMock()
-    resp.status_code = 401
+    resp.status_code = 400
+    resp.json.return_value = {
+        "message": "Bad Request",
+        "errors": [{"resource": "RefreshToken", "field": "refresh_token", "code": "invalid"}],
+    }
     session.post.return_value = resp
-    with pytest.raises(RuntimeError, match="refresh failed"):
+    with pytest.raises(OAuthTokenError) as ei:
         refresh_access_token(
             client_id="cid",
             client_secret="sec",
             refresh_token="dead",
             session=session,
         )
+    assert ei.value.status == 400
+    assert "invalid" in ei.value.detail
+    assert "dead" not in ei.value.detail
+
+
+def test_safe_oauth_error_redacts_tokenish() -> None:
+    resp = MagicMock()
+    resp.status_code = 401
+    resp.json.return_value = {
+        "error": "invalid_client",
+        "error_description": "client auth failed token=abcdefghijklmnopqrstuvwxyz012345",
+    }
+    detail = safe_oauth_error_detail(resp)
+    assert "invalid_client" in detail
+    assert "abcdefghijklmnopqrstuvwxyz012345" not in detail
+    assert "[redacted]" in detail
 
 
 def test_exchange_code_success() -> None:

@@ -12,7 +12,8 @@ import requests
 from bike_wind.gpx.parse import RouteStreams
 from bike_wind.settings import get_setting
 from bike_wind.strava.cache import CachedSegment, SegmentCache
-from bike_wind.strava.oauth import OAuthTokens, refresh_access_token
+from bike_wind.strava import errors as strava_errors
+from bike_wind.strava.oauth import OAuthTokenError, OAuthTokens, refresh_access_token
 from bike_wind.strava.rate_limit import RateLimitExceeded, RateLimiter, RateLimitStatus
 from bike_wind.strava.urls import ParsedStravaRef, parse_strava_segment_ref
 
@@ -21,16 +22,8 @@ DEFAULT_CACHE_DIR = Path.home() / ".cache" / "bike_wind"
 # Prefer project-local cache when running from repo
 REPO_CACHE = Path(__file__).resolve().parents[2] / ".cache" / "strava"
 
-# Shown when access is dead and refresh cannot recover. Never mentions fake flags.
-TOKEN_RECOVERY_HINT = (
-    "Strava access token is missing or expired, and refresh did not succeed. "
-    "Go to https://www.strava.com/settings/api → copy a fresh Access Token "
-    "(and Refresh Token if shown) → paste into Streamlit Cloud secrets under "
-    "`[strava]` as `access_token` / `refresh_token` → reboot the app. "
-    "Or use Connect with Strava for this browser session. "
-    "Note: Streamlit secrets are read-only at runtime — a successful refresh "
-    "only updates this session until you paste new tokens into secrets."
-)
+# Back-compat alias for callers/tests that imported the old hint.
+TOKEN_RECOVERY_HINT = strava_errors.REFRESH_FAILED
 
 
 @dataclass(frozen=True)
@@ -95,13 +88,18 @@ class StravaError(RuntimeError):
 
 
 class StravaAuthError(StravaError):
-    pass
+    """Auth/permission failure with a stable ``kind`` for UI / screenshots."""
+
+    def __init__(self, message: str, *, kind: str = "auth") -> None:
+        self.kind = kind
+        super().__init__(message)
 
 
 class StravaRateLimitError(StravaError):
     def __init__(self, status: RateLimitStatus) -> None:
         self.status = status
-        super().__init__(status.message or "Strava rate limit exceeded")
+        msg = status.message or strava_errors.RATE_LIMIT
+        super().__init__(msg)
 
 
 def load_strava_config(*, cache_dir: Path | None = None) -> StravaConfig:
@@ -153,18 +151,26 @@ class StravaClient:
 
     def _refresh_tokens(self) -> None:
         """Exchange refresh_token for a new access_token. Raises StravaAuthError."""
-        if not self._can_refresh():
-            raise StravaAuthError(TOKEN_RECOVERY_HINT)
+        if not (self.config.client_id and self.config.client_secret):
+            raise StravaAuthError(strava_errors.MISSING_SECRETS, kind="missing_secrets")
+        if not self.refresh_token:
+            raise StravaAuthError(strava_errors.REFRESH_FAILED, kind="refresh_failed")
         try:
             tokens = refresh_access_token(
-                client_id=self.config.client_id,  # type: ignore[arg-type]
-                client_secret=self.config.client_secret,  # type: ignore[arg-type]
-                refresh_token=self.refresh_token,  # type: ignore[arg-type]
+                client_id=str(self.config.client_id),
+                client_secret=str(self.config.client_secret),
+                refresh_token=str(self.refresh_token),
                 session=self.session,
                 timeout_s=self.timeout_s,
             )
+        except OAuthTokenError as exc:
+            detail = exc.detail or str(exc)
+            raise StravaAuthError(
+                strava_errors.REFRESH_FAILED_DETAIL.format(detail=detail),
+                kind="refresh_failed",
+            ) from exc
         except Exception as exc:  # noqa: BLE001 — never include token/body details
-            raise StravaAuthError(TOKEN_RECOVERY_HINT) from exc
+            raise StravaAuthError(strava_errors.REFRESH_FAILED, kind="refresh_failed") from exc
         self.access_token = tokens.access_token
         if tokens.refresh_token:
             self.refresh_token = tokens.refresh_token
@@ -376,8 +382,10 @@ class StravaClient:
         if not self.access_token:
             if self._can_refresh():
                 self._refresh_tokens()
+            elif self.config.client_id or self.config.client_secret or self.refresh_token:
+                raise StravaAuthError(strava_errors.REFRESH_FAILED, kind="refresh_failed")
             else:
-                raise StravaAuthError(TOKEN_RECOVERY_HINT)
+                raise StravaAuthError(strava_errors.MISSING_SECRETS, kind="missing_secrets")
         try:
             self.limiter.check()
         except RateLimitExceeded as exc:
@@ -396,12 +404,23 @@ class StravaClient:
             if not _retried and self._can_refresh():
                 self._refresh_tokens()
                 return self._get(path, params, _retried=True)
-            raise StravaAuthError(TOKEN_RECOVERY_HINT)
+            if _retried:
+                raise StravaAuthError(
+                    strava_errors.UNAUTHORIZED_AFTER_REFRESH,
+                    kind="expired_access",
+                )
+            if self._can_refresh():
+                raise StravaAuthError(strava_errors.REFRESH_FAILED, kind="refresh_failed")
+            raise StravaAuthError(strava_errors.REFRESH_FAILED, kind="expired_access")
         if resp.status_code == 403:
+            if path.rstrip("/").endswith("/segments/explore"):
+                raise StravaAuthError(
+                    strava_errors.FORBIDDEN_EXPLORE_TIER,
+                    kind="forbidden_explore_tier",
+                )
             raise StravaAuthError(
-                "Strava forbidden (HTTP 403) — token lacks required OAuth scope "
-                f"(need `read` for {path}). Re-authorize with Connect Strava, or "
-                "use an access token that includes `read`."
+                strava_errors.FORBIDDEN_SCOPE.format(path=path),
+                kind="forbidden_scope",
             )
         if resp.status_code == 429:
             status = self.limiter.status()
@@ -413,7 +432,7 @@ class StravaClient:
                     remaining_day=status.remaining_day,
                     limited=True,
                     retry_after_s=float(resp.headers.get("Retry-After") or 60),
-                    message="Strava HTTP 429 — rate limited by API.",
+                    message=strava_errors.RATE_LIMIT,
                 )
             )
         if resp.status_code >= 400:

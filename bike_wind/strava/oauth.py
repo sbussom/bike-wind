@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
@@ -12,6 +13,9 @@ AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
 TOKEN_URL = "https://www.strava.com/oauth/token"
 READ_SCOPE = "read"
 
+# Long hex/base64-ish blobs that look like tokens — never show in UI.
+_TOKENISH = re.compile(r"[A-Za-z0-9_\-]{20,}")
+
 
 @dataclass(frozen=True)
 class OAuthTokens:
@@ -19,6 +23,15 @@ class OAuthTokens:
     refresh_token: str | None
     expires_at: int | None
     athlete_id: int | None
+
+
+class OAuthTokenError(RuntimeError):
+    """Refresh/exchange failure with a safe, user-visible detail string."""
+
+    def __init__(self, message: str, *, status: int | None = None, detail: str = "") -> None:
+        self.status = status
+        self.detail = detail
+        super().__init__(message)
 
 
 def oauth_configured(client_id: str | None, client_secret: str | None, redirect_uri: str | None) -> bool:
@@ -37,6 +50,52 @@ def build_authorize_url(client_id: str, redirect_uri: str, *, state: str = "bike
     return f"{AUTHORIZE_URL}?{urlencode(params)}"
 
 
+def _coerce_client_id(client_id: str) -> str | int:
+    """Strava accepts numeric client_id as int; keep string if non-numeric."""
+    text = str(client_id).strip()
+    if text.isdigit():
+        return int(text)
+    return text
+
+
+def _redact_tokenish(text: str) -> str:
+    return _TOKENISH.sub("[redacted]", text)
+
+
+def safe_oauth_error_detail(resp: requests.Response) -> str:
+    """Extract Strava error/message fields; never return raw tokens."""
+    try:
+        data = resp.json()
+    except Exception:  # noqa: BLE001
+        return f"HTTP {resp.status_code}"
+    if not isinstance(data, dict):
+        return f"HTTP {resp.status_code}"
+
+    parts: list[str] = []
+    for key in ("message", "error", "error_description"):
+        val = data.get(key)
+        if isinstance(val, str) and val.strip():
+            parts.append(f"{key}={_redact_tokenish(val.strip())}")
+    errors = data.get("errors")
+    if isinstance(errors, list):
+        for item in errors[:5]:
+            if isinstance(item, dict):
+                bits = [
+                    item.get("resource"),
+                    item.get("field"),
+                    item.get("code"),
+                    item.get("message"),
+                ]
+                bit = " ".join(str(x) for x in bits if x).strip()
+                if bit:
+                    parts.append(_redact_tokenish(bit))
+            elif isinstance(item, str) and item.strip():
+                parts.append(_redact_tokenish(item.strip()))
+    if not parts:
+        return f"HTTP {resp.status_code}"
+    return f"HTTP {resp.status_code}: " + "; ".join(parts)
+
+
 def exchange_code(
     *,
     client_id: str,
@@ -50,7 +109,7 @@ def exchange_code(
     resp = http.post(
         TOKEN_URL,
         data={
-            "client_id": client_id,
+            "client_id": _coerce_client_id(client_id),
             "client_secret": client_secret,
             "code": code,
             "grant_type": "authorization_code",
@@ -58,8 +117,12 @@ def exchange_code(
         timeout=timeout_s,
     )
     if resp.status_code >= 400:
-        # Avoid dumping body (may include tokens)
-        raise RuntimeError(f"Strava token exchange failed (HTTP {resp.status_code})")
+        detail = safe_oauth_error_detail(resp)
+        raise OAuthTokenError(
+            f"Strava token exchange failed ({detail})",
+            status=resp.status_code,
+            detail=detail,
+        )
     data: dict[str, Any] = resp.json()
     athlete = data.get("athlete") or {}
     return OAuthTokens(
@@ -78,12 +141,12 @@ def refresh_access_token(
     session: requests.Session | None = None,
     timeout_s: float = 20,
 ) -> OAuthTokens:
-    """Refresh grant. Does not log response bodies (tokens)."""
+    """POST refresh_token grant. Surfaces safe Strava error detail (no tokens)."""
     http = session or requests.Session()
     resp = http.post(
         TOKEN_URL,
         data={
-            "client_id": client_id,
+            "client_id": _coerce_client_id(client_id),
             "client_secret": client_secret,
             "refresh_token": refresh_token,
             "grant_type": "refresh_token",
@@ -91,7 +154,12 @@ def refresh_access_token(
         timeout=timeout_s,
     )
     if resp.status_code >= 400:
-        raise RuntimeError(f"Strava token refresh failed (HTTP {resp.status_code})")
+        detail = safe_oauth_error_detail(resp)
+        raise OAuthTokenError(
+            f"Strava token refresh failed ({detail})",
+            status=resp.status_code,
+            detail=detail,
+        )
     data: dict[str, Any] = resp.json()
     return OAuthTokens(
         access_token=str(data["access_token"]),

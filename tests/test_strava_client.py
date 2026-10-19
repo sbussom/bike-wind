@@ -208,14 +208,25 @@ def test_explore_top_10(tmp_path: Path) -> None:
     assert hits[0].end_lon == pytest.approx(-80.09)
 
 
-def test_explore_403_mentions_oauth_scope(tmp_path: Path) -> None:
+def test_explore_403_mentions_extended_access_tier(tmp_path: Path) -> None:
     session = MagicMock()
     resp = MagicMock()
     resp.status_code = 403
     session.get.return_value = resp
     client = StravaClient(_config(tmp_path), session=session)
-    with pytest.raises(StravaAuthError, match="read"):
+    with pytest.raises(StravaAuthError, match="Extended Access"):
         client.explore([26.0, -80.2, 26.2, -80.0])
+
+
+def test_segment_403_mentions_read_scope(tmp_path: Path) -> None:
+    session = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 403
+    session.get.return_value = resp
+    client = StravaClient(_config(tmp_path), session=session)
+    with pytest.raises(StravaAuthError, match="read") as ei:
+        client.get_segment_meta(1, use_cache=False)
+    assert ei.value.kind == "forbidden_scope"
 
 
 def test_401_refreshes_and_retries(tmp_path: Path) -> None:
@@ -259,18 +270,23 @@ def test_401_refreshes_and_retries(tmp_path: Path) -> None:
     assert session.post.call_count == 1
 
 
-def test_401_refresh_failure_is_actionable(tmp_path: Path) -> None:
+def test_401_refresh_failure_surfaces_strava_detail(tmp_path: Path) -> None:
     session = MagicMock()
     unauthorized = MagicMock()
     unauthorized.status_code = 401
     session.get.return_value = unauthorized
     bad_refresh = MagicMock()
     bad_refresh.status_code = 400
+    bad_refresh.json.return_value = {
+        "message": "Bad Request",
+        "errors": [{"resource": "RefreshToken", "code": "invalid"}],
+    }
     session.post.return_value = bad_refresh
 
     client = StravaClient(_config(tmp_path, access_token="expired"), session=session)
-    with pytest.raises(StravaAuthError, match="settings/api"):
+    with pytest.raises(StravaAuthError, match=r"\[refresh failed\].*invalid") as ei:
         client.get_segment_meta(1, use_cache=False)
+    assert ei.value.kind == "refresh_failed"
 
 
 def test_401_without_refresh_token_is_actionable(tmp_path: Path) -> None:
@@ -282,7 +298,7 @@ def test_401_without_refresh_token_is_actionable(tmp_path: Path) -> None:
         _config(tmp_path, access_token="expired", refresh_token=None),
         session=session,
     )
-    with pytest.raises(StravaAuthError, match="access_token"):
+    with pytest.raises(StravaAuthError, match=r"\[refresh failed\]"):
         client.get_segment_meta(1, use_cache=False)
 
 
