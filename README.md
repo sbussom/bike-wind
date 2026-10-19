@@ -2,7 +2,7 @@
 
 Predict ground speed on a road segment under forecast wind.
 
-**UI flow:** (1) Where & when — compact Windy pin (2) Rider & route — power, GPX or Strava starred (3) Results — ETA first, then map + chart. Advanced options (HRRR, aero kits, Explore, secrets diagnostic) stay collapsed.
+**UI flow (desktop):** left = wind map; right = Enter segment (Strava Connect / starred / ID, then GPX) + rider. Results full-width below. Visitors **Connect with Strava** for their own starred list (session token); owner secrets token is fallback only.
 
 ## Setup
 

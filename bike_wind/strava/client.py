@@ -197,8 +197,34 @@ class StravaClient:
         )
         return meta, route
 
-    def list_starred(self, *, page: int = 1, per_page: int = 30) -> list[StarredSegment]:
-        data = self._get("/segments/starred", params={"page": page, "per_page": per_page})
+    def list_starred(
+        self,
+        *,
+        page: int | None = None,
+        per_page: int = 200,
+        max_pages: int = 50,
+    ) -> list[StarredSegment]:
+        """Return starred segments.
+
+        When ``page`` is set, fetch that page only. Otherwise paginate until a
+        short page (or empty) so the UI is not silently truncated at 30.
+        """
+        if page is not None:
+            return self._list_starred_page(page=page, per_page=per_page)
+
+        out: list[StarredSegment] = []
+        for p in range(1, max_pages + 1):
+            batch = self._list_starred_page(page=p, per_page=per_page)
+            out.extend(batch)
+            if len(batch) < per_page:
+                break
+        return out
+
+    def _list_starred_page(self, *, page: int, per_page: int) -> list[StarredSegment]:
+        data = self._get(
+            "/segments/starred",
+            params={"page": page, "per_page": per_page},
+        )
         if not isinstance(data, list):
             raise StravaError("Unexpected starred segments response")
         out: list[StarredSegment] = []

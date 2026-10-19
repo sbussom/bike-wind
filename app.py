@@ -211,6 +211,8 @@ def _init_state() -> None:
         st.session_state.strava_segment_id = None
     if "strava_access_token" not in st.session_state:
         st.session_state.strava_access_token = None
+    if "strava_refresh_token" not in st.session_state:
+        st.session_state.strava_refresh_token = None
     if "starred_segments" not in st.session_state:
         st.session_state.starred_segments = None
     if "use_strava_segment" not in st.session_state:
@@ -240,12 +242,20 @@ def _init_state() -> None:
 
 
 def _effective_strava_token(config) -> str | None:
-    """Prefer session OAuth token, then STRAVA_ACCESS_TOKEN from env/secrets."""
+    """Prefer this visitor's session OAuth token, then deployer secrets token."""
     return st.session_state.strava_access_token or config.access_token
 
 
+def _token_source(config) -> str:
+    if st.session_state.strava_access_token:
+        return "session"
+    if config.access_token:
+        return "secrets"
+    return "none"
+
+
 def _handle_oauth_callback(config) -> None:
-    """Exchange ?code= from Strava redirect; never log tokens or payloads."""
+    """Exchange ?code= from Strava redirect into session_state (never secrets)."""
     params = st.query_params
     code = params.get("code")
     if not code or st.session_state.get("_oauth_handled_code") == code:
@@ -259,6 +269,8 @@ def _handle_oauth_callback(config) -> None:
             code=str(code),
         )
         st.session_state.strava_access_token = tokens.access_token
+        st.session_state.strava_refresh_token = tokens.refresh_token
+        st.session_state.starred_segments = None  # reload under the new account
         st.session_state._oauth_handled_code = code
         try:
             del st.query_params["code"]
@@ -268,9 +280,35 @@ def _handle_oauth_callback(config) -> None:
                 del st.query_params["state"]
         except Exception:  # noqa: BLE001
             pass
-        st.success("Strava connected (read scope).")
+        st.success("Strava connected for this browser session.")
     except Exception as exc:  # noqa: BLE001 — no response body in message
         st.error(f"Strava OAuth failed: {exc}")
+
+
+def _on_disconnect_strava() -> None:
+    st.session_state.strava_access_token = None
+    st.session_state.strava_refresh_token = None
+    st.session_state.starred_segments = None
+    st.session_state.use_strava_segment = False
+
+
+def _load_starred_into_state(client: StravaClient) -> int:
+    """Fetch all starred pages into session_state. Returns count."""
+    starred = client.list_starred()
+    st.session_state.starred_segments = [
+        {
+            "id": s.segment_id,
+            "label": (
+                f"{s.name} ({s.distance_m/1000:.1f} km, "
+                f"{s.average_grade:.1f}%)"
+            ),
+            "distance_m": s.distance_m,
+            "average_grade": s.average_grade,
+            "name": s.name,
+        }
+        for s in starred
+    ]
+    return len(st.session_state.starred_segments)
 
 
 def _on_reset_map_location() -> None:
@@ -413,161 +451,131 @@ def main() -> None:
     strava_cfg = load_strava_config()
     _handle_oauth_callback(strava_cfg)
     token = _effective_strava_token(strava_cfg)
+    tok_src = _token_source(strava_cfg)
 
-    # --- 1. Where & when ---
-    with st.container(border=True):
-        st.html('<p class="bw-section-label">01 · Where &amp; when</p>')
-        st.subheader("Local wind")
-        default_dt = datetime.now(timezone.utc).replace(
-            minute=0, second=0, microsecond=0
-        ) + timedelta(hours=3)
-        when = st.datetime_input("Ride datetime (UTC)", value=default_dt)
+    default_dt = datetime.now(timezone.utc).replace(
+        minute=0, second=0, microsecond=0
+    ) + timedelta(hours=3)
 
-        map_lat = float(st.session_state.map_lat_input)
-        map_lon = float(st.session_state.map_lon_input)
-        st.session_state.map_lat = map_lat
-        st.session_state.map_lon = map_lon
+    map_lat = float(st.session_state.map_lat_input)
+    map_lon = float(st.session_state.map_lon_input)
+    st.session_state.map_lat = map_lat
+    st.session_state.map_lon = map_lon
 
-        pin = fetch_pin_wind(map_lat, map_lon)
-        if pin is not None:
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Wind", f"{pin.speed_mph:.1f} mph")
-            m2.metric("From", f"{compass_label(pin.direction_deg)}")
-            if pin.temperature_c is not None:
-                m3.metric("Temp", f"{pin.temperature_c * 9 / 5 + 32:.0f} °F")
+    use_strava = False
+    use_sample = True
+    uploaded = None
+    power_w = st.session_state.power_w
+    full_aero = st.session_state.get("full_aero_kit", False)
+    non_aero = st.session_state.get("non_aero", False)
+    prefer_hrrr = hrrr_enabled_by_env()
+    target_raw = ""
+    when = default_dt
+
+    # Desktop: map left · segment + rider right. Mobile stacks left→right.
+    left_col, right_col = st.columns([1.35, 1], gap="large")
+
+    with left_col:
+        with st.container(border=True):
+            st.html('<p class="bw-section-label">Wind map</p>')
+            when = st.datetime_input("Ride datetime (UTC)", value=default_dt)
+
+            pin = fetch_pin_wind(map_lat, map_lon)
+            if pin is not None:
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Wind", f"{pin.speed_mph:.1f} mph")
+                m2.metric("From", f"{compass_label(pin.direction_deg)}")
+                if pin.temperature_c is not None:
+                    m3.metric("Temp", f"{pin.temperature_c * 9 / 5 + 32:.0f} °F")
+                else:
+                    m3.metric("Temp", "—")
             else:
-                m3.metric("Temp", "—")
-        else:
-            st.caption("Pin wind sample unavailable — map still loads.")
+                st.caption("Pin wind sample unavailable — map still loads.")
 
-        components.html(
-            windy_iframe_html(map_lat, map_lon, height_px=WINDY_EMBED_HEIGHT_PX),
-            height=WINDY_EMBED_HEIGHT_PX + 8,
-            scrolling=False,
-        )
+            windy_h = max(WINDY_EMBED_HEIGHT_PX, 380)
+            components.html(
+                windy_iframe_html(map_lat, map_lon, height_px=windy_h),
+                height=windy_h + 8,
+                scrolling=False,
+            )
 
-        with st.expander("Map pin", expanded=False):
-            loc1, loc2, loc3 = st.columns([1, 1, 1])
-            with loc1:
-                st.number_input(
-                    "Lat",
-                    min_value=-85.0,
-                    max_value=85.0,
-                    step=0.1,
-                    format="%.4f",
-                    key="map_lat_input",
-                )
-            with loc2:
-                st.number_input(
-                    "Lon",
-                    min_value=-180.0,
-                    max_value=180.0,
-                    step=0.1,
-                    format="%.4f",
-                    key="map_lon_input",
-                )
-            with loc3:
-                st.write("")
-                st.write("")
+            with st.expander("Map pin", expanded=False):
+                loc1, loc2, loc3 = st.columns([1, 1, 1])
+                with loc1:
+                    st.number_input(
+                        "Lat",
+                        min_value=-85.0,
+                        max_value=85.0,
+                        step=0.1,
+                        format="%.4f",
+                        key="map_lat_input",
+                    )
+                with loc2:
+                    st.number_input(
+                        "Lon",
+                        min_value=-180.0,
+                        max_value=180.0,
+                        step=0.1,
+                        format="%.4f",
+                        key="map_lon_input",
+                    )
+                with loc3:
+                    st.write("")
+                    st.write("")
+                    st.button(
+                        "SE Florida",
+                        on_click=_on_reset_map_location,
+                        use_container_width=True,
+                    )
+                st.caption("Pin auto-centers on the loaded route after you run.")
+
+    with right_col:
+        # --- Enter segment (top of right column) ---
+        with st.container(border=True):
+            st.html('<p class="bw-section-label">Enter segment</p>')
+            st.subheader("Route source")
+
+            if tok_src == "session":
+                st.caption("Using **your** Strava account (this browser session).")
                 st.button(
-                    "SE Florida",
-                    on_click=_on_reset_map_location,
-                    use_container_width=True,
+                    "Disconnect Strava",
+                    on_click=_on_disconnect_strava,
+                    key="disconnect_strava",
                 )
-            st.caption("Pin auto-centers on the loaded route after you run.")
-
-    # --- 2. Rider & route ---
-    with st.container(border=True):
-        st.html('<p class="bw-section-label">02 · Rider &amp; route</p>')
-        st.subheader("Setup")
-
-        labels = position_labels()
-        current_label = POSITION_PRESETS[st.session_state.position_key].label
-        position_label = st.radio(
-            "Position",
-            options=labels,
-            index=labels.index(current_label),
-            horizontal=True,
-        )
-        position_key = position_key_for_label(position_label)
-        if position_key != st.session_state.position_key:
-            st.session_state.position_key = position_key
-            if not st.session_state.bike_mass_manual:
-                _apply_bike_kg(POSITION_PRESETS[position_key].bike_mass_kg, manual=False)
-
-        rw1, rw2, rw3 = st.columns([1, 1, 1.2])
-        with rw1:
-            st.number_input(
-                "Rider kg",
-                min_value=40.0,
-                max_value=150.0,
-                step=0.5,
-                key="rider_kg_input",
-                on_change=_on_rider_kg,
-            )
-        with rw2:
-            st.number_input(
-                "Rider lbs",
-                min_value=88.0,
-                max_value=330.0,
-                step=1.0,
-                key="rider_lb_input",
-                on_change=_on_rider_lb,
-            )
-        with rw3:
-            power_w = st.number_input(
-                "Sustained power (W)",
-                min_value=50,
-                max_value=600,
-                step=10,
-                key="power_w",
-            )
-        st.session_state.rider_kg = float(st.session_state.rider_kg_input)
-
-        preset_cols = st.columns(len(RIDER_WEIGHT_PRESETS_KG))
-        for col, kg in zip(preset_cols, RIDER_WEIGHT_PRESETS_KG):
-            with col:
-                st.button(
-                    f"{int(kg)} kg",
-                    key=f"wpreset_{int(kg)}",
-                    use_container_width=True,
-                    on_click=_on_weight_preset,
-                    args=(kg,),
+            elif tok_src == "secrets":
+                st.caption(
+                    "Using the **app owner's** token — Connect Strava to load "
+                    "**your** starred segments instead."
                 )
+            else:
+                st.caption("Connect Strava or paste a segment ID. GPX still works.")
 
-        use_sample = st.checkbox("Use sample South Florida GPX", value=True)
-        uploaded = st.file_uploader("Upload GPX", type=["gpx"])
-
-        use_strava = False
-        with st.expander("Strava route", expanded=False):
-            if token:
-                st.caption("Connected — pick a starred segment or paste an ID.")
-            elif strava_cfg.oauth_ready:
+            if strava_cfg.oauth_ready and tok_src != "session":
                 auth_url = build_authorize_url(
                     strava_cfg.client_id,  # type: ignore[arg-type]
                     strava_cfg.redirect_uri,  # type: ignore[arg-type]
                 )
-                st.markdown(f"[Connect Strava]({auth_url})")
-            else:
-                st.caption("Add Strava secrets (access token or OAuth) to enable.")
+                st.link_button(
+                    "Connect with Strava",
+                    auth_url,
+                    use_container_width=True,
+                )
+                st.caption(
+                    "Authorization Callback Domain / redirect URI must be "
+                    f"`{strava_cfg.redirect_uri}` in your Strava API app."
+                )
+            elif not strava_cfg.oauth_ready and tok_src == "none":
+                st.caption(
+                    "Owner: set `client_id` / `client_secret` / `redirect_uri` "
+                    "in secrets to enable Connect for visitors."
+                )
 
             if token:
                 if st.button("Load starred segments", key="refresh_starred"):
                     try:
                         client = StravaClient(strava_cfg, access_token=token)
-                        st.session_state.starred_segments = [
-                            {
-                                "id": s.segment_id,
-                                "label": (
-                                    f"{s.name} ({s.distance_m/1000:.1f} km, "
-                                    f"{s.average_grade:.1f}%)"
-                                ),
-                                "distance_m": s.distance_m,
-                                "average_grade": s.average_grade,
-                                "name": s.name,
-                            }
-                            for s in client.list_starred()
-                        ]
+                        n = _load_starred_into_state(client)
+                        st.success(f"Loaded {n} starred segment{'s' if n != 1 else ''}.")
                     except StravaRateLimitError as exc:
                         st.error(exc.status.message or str(exc))
                     except Exception as exc:  # noqa: BLE001
@@ -575,8 +583,9 @@ def main() -> None:
 
                 starred = st.session_state.starred_segments
                 if starred:
+                    st.caption(f"{len(starred)} starred")
                     labels_s = [s["label"] for s in starred]
-                    picked = st.radio(
+                    picked = st.selectbox(
                         "Starred segment",
                         options=["(none)"] + labels_s,
                         key="starred_pick",
@@ -597,10 +606,12 @@ def main() -> None:
                             average_grade=float(chosen.get("average_grade") or 0.0),
                         )
                 elif starred is None:
-                    st.caption("Load starred segments to choose one.")
+                    st.caption("Load starred to pick one (all pages fetched).")
+                else:
+                    st.caption("No starred segments returned.")
 
             strava_ref_text = st.text_input(
-                "Or segment URL / ID",
+                "Segment URL or ID",
                 placeholder="https://www.strava.com/segments/229781",
                 key="strava_ref_input",
             )
@@ -647,165 +658,255 @@ def main() -> None:
                     key="use_strava_segment",
                 )
 
-        # Defaults for advanced (may be overridden in expander)
-        full_aero = st.session_state.get("full_aero_kit", False)
-        non_aero = st.session_state.get("non_aero", False)
-        prefer_hrrr = hrrr_enabled_by_env()
-        target_raw = ""
+            use_sample = st.checkbox("Use sample South Florida GPX", value=True)
+            uploaded = st.file_uploader(
+                "Upload GPX",
+                type=["gpx"],
+                help=(
+                    "Use a GPX when you have a full ride/route export, or the "
+                    "segment isn’t in Strava/starred. Prefer starred or a "
+                    "segment ID when available."
+                ),
+            )
+            st.caption(
+                "GPX: full ride or route export, or when the segment isn’t on "
+                "Strava. Starred / segment ID preferred when you have them."
+            )
 
-        with st.expander("Advanced / troubleshooting", expanded=False):
-            st.markdown("**Bike & aero**")
-            bw1, bw2 = st.columns(2)
-            with bw1:
+        # --- Rider (below segment on the right) ---
+        with st.container(border=True):
+            st.html('<p class="bw-section-label">Rider</p>')
+            st.subheader("You")
+
+            labels = position_labels()
+            current_label = POSITION_PRESETS[st.session_state.position_key].label
+            position_label = st.radio(
+                "Position",
+                options=labels,
+                index=labels.index(current_label),
+                horizontal=True,
+            )
+            position_key = position_key_for_label(position_label)
+            if position_key != st.session_state.position_key:
+                st.session_state.position_key = position_key
+                if not st.session_state.bike_mass_manual:
+                    _apply_bike_kg(
+                        POSITION_PRESETS[position_key].bike_mass_kg, manual=False
+                    )
+
+            rw1, rw2 = st.columns(2)
+            with rw1:
                 st.number_input(
-                    "Bike kg",
-                    min_value=4.0,
-                    max_value=20.0,
-                    step=0.1,
-                    key="bike_kg_input",
-                    on_change=_on_bike_kg,
+                    "Rider kg",
+                    min_value=40.0,
+                    max_value=150.0,
+                    step=0.5,
+                    key="rider_kg_input",
+                    on_change=_on_rider_kg,
                 )
-            with bw2:
+            with rw2:
                 st.number_input(
-                    "Bike lbs",
-                    min_value=9.0,
-                    max_value=44.0,
-                    step=0.2,
-                    key="bike_lb_input",
-                    on_change=_on_bike_lb,
+                    "Rider lbs",
+                    min_value=88.0,
+                    max_value=330.0,
+                    step=1.0,
+                    key="rider_lb_input",
+                    on_change=_on_rider_lb,
                 )
-            st.session_state.bike_kg = float(st.session_state.bike_kg_input)
-            if st.session_state.bike_mass_manual:
-                st.button("Reset bike to position default", on_click=_on_reset_bike_mass)
+            st.session_state.rider_kg = float(st.session_state.rider_kg_input)
 
-            a1, a2 = st.columns(2)
-            with a1:
-                full_aero = st.checkbox(
-                    "Full aero kit (−Cd / −A)",
-                    key="full_aero_kit",
-                )
-            with a2:
-                non_aero = st.checkbox(
-                    "Non-aero / no helmet (+Cd)",
-                    key="non_aero",
-                )
-
-            st.number_input(
-                "Rider height (cm)",
-                min_value=140.0,
-                max_value=210.0,
-                step=0.5,
-                key="height_cm_input",
-                on_change=_on_height_cm,
-            )
-            target_raw = st.text_input(
-                "KOM / target time (mm:ss or seconds)",
-                value="",
-                placeholder="12:30",
-                key="target_time_input",
-            )
-            prefer_hrrr = st.toggle(
-                "Prefer NOAA HRRR (CONUS)",
-                value=hrrr_enabled_by_env(),
-                key="prefer_hrrr_toggle",
+            power_w = st.number_input(
+                "Sustained power (W)",
+                min_value=50,
+                max_value=600,
+                step=10,
+                key="power_w",
             )
 
-            with st.expander("Explore Segments", expanded=False):
-                if not strava_cfg.extended_access:
-                    st.caption("Requires `STRAVA_EXTENDED_ACCESS=true`.")
-                elif not token:
-                    st.caption("Needs a Strava token.")
-                else:
-                    b1, b2, b3, b4 = st.columns(4)
-                    sw_lat = b1.number_input("SW lat", value=26.05, format="%.4f")
-                    sw_lon = b2.number_input("SW lon", value=-80.20, format="%.4f")
-                    ne_lat = b3.number_input("NE lat", value=26.25, format="%.4f")
-                    ne_lon = b4.number_input("NE lon", value=-80.05, format="%.4f")
-                    if st.button("Explore top 10", key="explore_btn"):
-                        try:
-                            client = StravaClient(strava_cfg, access_token=token)
-                            hits = client.explore([sw_lat, sw_lon, ne_lat, ne_lon])
-                            st.session_state.explore_hits = [
-                                {
-                                    "id": h.segment_id,
-                                    "label": (
-                                        f"{h.name} ({h.distance_m/1000:.1f} km, "
-                                        f"{h.average_grade:.1f}%)"
-                                    ),
-                                    "name": h.name,
-                                    "distance_m": h.distance_m,
-                                    "average_grade": h.average_grade,
-                                }
-                                for h in hits
-                            ]
-                        except Exception as exc:  # noqa: BLE001
-                            st.error(f"Explore failed: {exc}")
-                    explore = st.session_state.get("explore_hits") or []
-                    if explore:
-                        elabels = [h["label"] for h in explore]
-                        epick = st.radio(
-                            "Explored segment",
-                            options=["(none)"] + elabels,
-                            key="explore_pick",
-                        )
-                        if epick != "(none)":
-                            chosen = next(h for h in explore if h["label"] == epick)
-                            _select_strava_segment(
-                                int(chosen["id"]),
-                                name=str(chosen.get("name") or epick.split(" (")[0]),
-                                distance_m=float(chosen.get("distance_m") or 0.0),
-                                average_grade=float(chosen.get("average_grade") or 0.0),
+            preset_cols = st.columns(len(RIDER_WEIGHT_PRESETS_KG))
+            for col, kg in zip(preset_cols, RIDER_WEIGHT_PRESETS_KG):
+                with col:
+                    st.button(
+                        f"{int(kg)}",
+                        key=f"wpreset_{int(kg)}",
+                        use_container_width=True,
+                        on_click=_on_weight_preset,
+                        args=(kg,),
+                    )
+
+            with st.expander("Advanced / troubleshooting", expanded=False):
+                st.markdown("**Bike & aero**")
+                bw1, bw2 = st.columns(2)
+                with bw1:
+                    st.number_input(
+                        "Bike kg",
+                        min_value=4.0,
+                        max_value=20.0,
+                        step=0.1,
+                        key="bike_kg_input",
+                        on_change=_on_bike_kg,
+                    )
+                with bw2:
+                    st.number_input(
+                        "Bike lbs",
+                        min_value=9.0,
+                        max_value=44.0,
+                        step=0.2,
+                        key="bike_lb_input",
+                        on_change=_on_bike_lb,
+                    )
+                st.session_state.bike_kg = float(st.session_state.bike_kg_input)
+                if st.session_state.bike_mass_manual:
+                    st.button(
+                        "Reset bike to position default",
+                        on_click=_on_reset_bike_mass,
+                    )
+
+                a1, a2 = st.columns(2)
+                with a1:
+                    full_aero = st.checkbox(
+                        "Full aero kit (−Cd / −A)",
+                        key="full_aero_kit",
+                    )
+                with a2:
+                    non_aero = st.checkbox(
+                        "Non-aero / no helmet (+Cd)",
+                        key="non_aero",
+                    )
+
+                st.number_input(
+                    "Rider height (cm)",
+                    min_value=140.0,
+                    max_value=210.0,
+                    step=0.5,
+                    key="height_cm_input",
+                    on_change=_on_height_cm,
+                )
+                target_raw = st.text_input(
+                    "KOM / target time (mm:ss or seconds)",
+                    value="",
+                    placeholder="12:30",
+                    key="target_time_input",
+                )
+                prefer_hrrr = st.toggle(
+                    "Prefer NOAA HRRR (CONUS)",
+                    value=hrrr_enabled_by_env(),
+                    key="prefer_hrrr_toggle",
+                )
+
+                with st.expander("Explore Segments", expanded=False):
+                    if not strava_cfg.extended_access:
+                        st.caption("Requires `STRAVA_EXTENDED_ACCESS=true`.")
+                    elif not token:
+                        st.caption("Needs a Strava token.")
+                    else:
+                        b1, b2, b3, b4 = st.columns(4)
+                        sw_lat = b1.number_input("SW lat", value=26.05, format="%.4f")
+                        sw_lon = b2.number_input("SW lon", value=-80.20, format="%.4f")
+                        ne_lat = b3.number_input("NE lat", value=26.25, format="%.4f")
+                        ne_lon = b4.number_input("NE lon", value=-80.05, format="%.4f")
+                        if st.button("Explore top 10", key="explore_btn"):
+                            try:
+                                client = StravaClient(strava_cfg, access_token=token)
+                                hits = client.explore(
+                                    [sw_lat, sw_lon, ne_lat, ne_lon]
+                                )
+                                st.session_state.explore_hits = [
+                                    {
+                                        "id": h.segment_id,
+                                        "label": (
+                                            f"{h.name} ({h.distance_m/1000:.1f} km, "
+                                            f"{h.average_grade:.1f}%)"
+                                        ),
+                                        "name": h.name,
+                                        "distance_m": h.distance_m,
+                                        "average_grade": h.average_grade,
+                                    }
+                                    for h in hits
+                                ]
+                            except Exception as exc:  # noqa: BLE001
+                                st.error(f"Explore failed: {exc}")
+                        explore = st.session_state.get("explore_hits") or []
+                        if explore:
+                            elabels = [h["label"] for h in explore]
+                            epick = st.radio(
+                                "Explored segment",
+                                options=["(none)"] + elabels,
+                                key="explore_pick",
                             )
+                            if epick != "(none)":
+                                chosen = next(
+                                    h for h in explore if h["label"] == epick
+                                )
+                                _select_strava_segment(
+                                    int(chosen["id"]),
+                                    name=str(
+                                        chosen.get("name") or epick.split(" (")[0]
+                                    ),
+                                    distance_m=float(
+                                        chosen.get("distance_m") or 0.0
+                                    ),
+                                    average_grade=float(
+                                        chosen.get("average_grade") or 0.0
+                                    ),
+                                )
 
-            if not token and not strava_cfg.oauth_ready:
-                with st.expander("Secrets diagnostic", expanded=False):
-                    presence = strava_secrets_presence()
-                    dbg = strava_secrets_debug()
-                    key_list = (
-                        ", ".join(f"`{k}`" for k in dbg["keys"]) if dbg["keys"] else "(none)"
-                    )
-                    nested_note = (
-                        " · Found nested `strava.*` keys"
-                        if dbg.get("nested_strava")
-                        else ""
-                    )
-                    st.caption(
-                        f"`st.secrets` available: {'yes' if dbg['available'] else 'no'}"
-                        f"{nested_note} · keys: {key_list}  \n"
-                        f"`CLIENT_ID`: {'set' if presence['CLIENT_ID'] else 'missing'} · "
-                        f"`CLIENT_SECRET`: {'set' if presence['CLIENT_SECRET'] else 'missing'} · "
-                        f"`REDIRECT_URI`: {'set' if presence['REDIRECT_URI'] else 'missing'} · "
-                        f"`ACCESS_TOKEN`: {'set' if presence['ACCESS_TOKEN'] else 'missing'}"
-                    )
+                if tok_src == "none" and not strava_cfg.oauth_ready:
+                    with st.expander("Secrets diagnostic", expanded=False):
+                        presence = strava_secrets_presence()
+                        dbg = strava_secrets_debug()
+                        key_list = (
+                            ", ".join(f"`{k}`" for k in dbg["keys"])
+                            if dbg["keys"]
+                            else "(none)"
+                        )
+                        nested_note = (
+                            " · Found nested `strava.*` keys"
+                            if dbg.get("nested_strava")
+                            else ""
+                        )
+                        st.caption(
+                            f"`st.secrets` available: "
+                            f"{'yes' if dbg['available'] else 'no'}"
+                            f"{nested_note} · keys: {key_list}  \n"
+                            f"`CLIENT_ID`: "
+                            f"{'set' if presence['CLIENT_ID'] else 'missing'} · "
+                            f"`CLIENT_SECRET`: "
+                            f"{'set' if presence['CLIENT_SECRET'] else 'missing'} · "
+                            f"`REDIRECT_URI`: "
+                            f"{'set' if presence['REDIRECT_URI'] else 'missing'} · "
+                            f"`ACCESS_TOKEN`: "
+                            f"{'set' if presence['ACCESS_TOKEN'] else 'missing'}"
+                        )
 
-        aero = resolve_aero(
-            st.session_state.position_key,
-            full_aero_kit=bool(full_aero),
-            non_aero=bool(non_aero),
-            bike_mass_kg=float(st.session_state.bike_kg),
-        )
-        st.caption(
-            f"{POSITION_PRESETS[aero.position_key].label} · "
-            f"Cd·A={aero.cd * aero.area_m2:.3f} · "
-            f"total {st.session_state.rider_kg + aero.bike_mass_kg:.1f} kg"
-        )
+            aero = resolve_aero(
+                st.session_state.position_key,
+                full_aero_kit=bool(full_aero),
+                non_aero=bool(non_aero),
+                bike_mass_kg=float(st.session_state.bike_kg),
+            )
+            st.caption(
+                f"{POSITION_PRESETS[aero.position_key].label} · "
+                f"Cd·A={aero.cd * aero.area_m2:.3f} · "
+                f"total {st.session_state.rider_kg + aero.bike_mass_kg:.1f} kg"
+            )
 
-        # Preview-center Windy when a custom GPX is uploaded (before Run)
-        if uploaded is not None and not use_sample and not use_strava:
-            gpx_bytes = uploaded.getvalue()
-            digest = hashlib.sha1(gpx_bytes).hexdigest()
-            if st.session_state.get("_gpx_center_digest") != digest:
-                try:
-                    preview = parse_gpx(gpx_bytes)
-                    mid_lat, mid_lon = preview.midpoint()
-                    st.session_state._gpx_center_digest = digest
-                    if _pin_needs_recenter(mid_lat, mid_lon):
-                        _queue_map_center(mid_lat, mid_lon)
-                        st.rerun()
-                except Exception:  # noqa: BLE001
-                    st.session_state._gpx_center_digest = digest
+            # Preview-center Windy when a custom GPX is uploaded (before Run)
+            if uploaded is not None and not use_sample and not use_strava:
+                gpx_bytes = uploaded.getvalue()
+                digest = hashlib.sha1(gpx_bytes).hexdigest()
+                if st.session_state.get("_gpx_center_digest") != digest:
+                    try:
+                        preview = parse_gpx(gpx_bytes)
+                        mid_lat, mid_lon = preview.midpoint()
+                        st.session_state._gpx_center_digest = digest
+                        if _pin_needs_recenter(mid_lat, mid_lon):
+                            _queue_map_center(mid_lat, mid_lon)
+                            st.rerun()
+                    except Exception:  # noqa: BLE001
+                        st.session_state._gpx_center_digest = digest
 
-        run = st.button("Run prediction", type="primary", use_container_width=True)
+            run = st.button("Run prediction", type="primary", use_container_width=True)
 
     last_run = st.session_state.get("_last_run")
     if not run and not last_run:

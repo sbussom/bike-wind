@@ -140,6 +140,47 @@ def test_list_starred(tmp_path: Path) -> None:
     assert session.get.call_args[0][0].endswith("/segments/starred")
 
 
+def test_list_starred_paginates_until_exhausted(tmp_path: Path) -> None:
+    session = MagicMock()
+
+    def fake_get(url, **kwargs):
+        params = kwargs.get("params") or {}
+        page = int(params.get("page") or 1)
+        per_page = int(params.get("per_page") or 200)
+        resp = MagicMock()
+        resp.status_code = 200
+        if page == 1:
+            resp.json.return_value = [
+                {
+                    "id": i,
+                    "name": f"S{i}",
+                    "distance": 1000.0,
+                    "average_grade": 1.0,
+                }
+                for i in range(per_page)
+            ]
+        elif page == 2:
+            resp.json.return_value = [
+                {
+                    "id": 1000 + i,
+                    "name": f"T{i}",
+                    "distance": 500.0,
+                    "average_grade": 2.0,
+                }
+                for i in range(17)
+            ]
+        else:
+            resp.json.return_value = []
+        return resp
+
+    session.get.side_effect = fake_get
+    client = StravaClient(_config(tmp_path), session=session)
+    starred = client.list_starred(per_page=30)
+    assert len(starred) == 47  # 30 + 17
+    assert session.get.call_count == 2
+    assert starred[-1].segment_id == 1016
+
+
 def test_explore_gated_without_flag(tmp_path: Path) -> None:
     client = StravaClient(_config(tmp_path, extended_access=False))
     with pytest.raises(StravaError, match="Extended Access"):
