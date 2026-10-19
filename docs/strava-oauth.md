@@ -2,7 +2,15 @@
 
 Live app: https://bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app
 
-Settings resolve **environment first**, then `st.secrets` (same key names). Cloud secrets are usually only in `st.secrets`, not `os.environ`.
+Settings resolve **environment first**, then `st.secrets` (same key names).
+
+## Multi-user / Connect with Strava
+
+Visitors click **Connect with Strava** → authorize → token stored in **that browser’s session only** (not shared secrets). Their starred list is their own.
+
+- Session OAuth token wins for API calls.
+- Deployer `access_token` in secrets is a fallback when nobody has connected in this session.
+- **Disconnect Strava** clears the session token.
 
 ## Strava API application
 
@@ -11,29 +19,26 @@ In https://www.strava.com/settings/api :
 | Field | Value |
 | --- | --- |
 | Authorization Callback Domain | `bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app` |
-| (redirect used by app) | `https://bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app` |
+| Redirect URI (exact, no path) | `https://bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app` |
 
-No path on the redirect URI — the app reads `?code=` from the root URL after OAuth.
+Same string must be `STRAVA_REDIRECT_URI` / `[strava].redirect_uri` in secrets. The app reads `?code=` from the root URL.
 
-## Streamlit Cloud secrets
-
-App settings → **Secrets** → paste:
+## Secrets example
 
 ```toml
-STRAVA_CLIENT_ID = "your_client_id"
-STRAVA_CLIENT_SECRET = "your_client_secret"
-STRAVA_REDIRECT_URI = "https://bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app"
-
-# Optional: skip OAuth UI and call segment APIs directly
-# STRAVA_ACCESS_TOKEN = "your_access_token"
-
-# Optional flags
-# STRAVA_EXTENDED_ACCESS = "false"
-# BIKE_WIND_HRRR = "false"
+[strava]
+client_id = "your_client_id"
+client_secret = "your_client_secret"
+redirect_uri = "https://bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app"
+# access_token = "optional owner fallback"
 ```
 
-After saving secrets, reboot the app. Under **Route source → Strava segment** you should see **Connect Strava (read scope)** when client id/secret/redirect are present.
+Flat `STRAVA_*` keys and lowercase nested keys are accepted. Reboot after saving.
+
+## Starred segments
+
+Starred lists are fully paginated (all pages). The UI shows **N starred**.
 
 ## Privacy
 
-Never commit secrets. The app does not log Strava tokens or stream payloads.
+Never commit secrets. Tokens and stream payloads are not application-logged.
