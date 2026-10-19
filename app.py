@@ -73,7 +73,12 @@ st.set_page_config(
 
 
 def _apply_theme(dark: bool) -> None:
-    """Calm athletic theme: Syne + Figtree, teal forest accent, soft gradient."""
+    """Calm athletic theme: Syne + Figtree, teal forest accent, soft gradient.
+
+    Use ``st.html`` (not ``st.markdown``) so ``<style>`` is injected. Recent
+    Streamlit versions sanitize markdown HTML and strip style tags, which made
+    the stylesheet print as visible plain text on the page.
+    """
     if dark:
         vars_block = """
         :root {
@@ -102,12 +107,11 @@ def _apply_theme(dark: bool) -> None:
           --bw-metric: #0f241c;
         }
         """
-    st.markdown(
+    # st.html keeps <style>; markdown would strip tags and leak CSS as text.
+    st.html(
         f"""
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
         <style>
+        @import url('https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Syne:wght@600;700;800&display=swap');
         {vars_block}
         .stApp {{
           background:
@@ -182,8 +186,7 @@ def _apply_theme(dark: bool) -> None:
           .bw-tagline {{ font-size: 0.98rem; }}
         }}
         </style>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -395,7 +398,7 @@ def main() -> None:
     _apply_theme(dark)
 
     with top_l:
-        st.markdown(
+        st.html(
             """
             <div class="bw-hero">
               <p class="bw-brand">Bike Wind</p>
@@ -404,8 +407,7 @@ def main() -> None:
                 set when and where, dial rider power, run.
               </p>
             </div>
-            """,
-            unsafe_allow_html=True,
+            """
         )
 
     strava_cfg = load_strava_config()
@@ -414,7 +416,7 @@ def main() -> None:
 
     # --- 1. Where & when ---
     with st.container(border=True):
-        st.markdown('<p class="bw-section-label">01 · Where &amp; when</p>', unsafe_allow_html=True)
+        st.html('<p class="bw-section-label">01 · Where &amp; when</p>')
         st.subheader("Local wind")
         default_dt = datetime.now(timezone.utc).replace(
             minute=0, second=0, microsecond=0
@@ -476,7 +478,7 @@ def main() -> None:
 
     # --- 2. Rider & route ---
     with st.container(border=True):
-        st.markdown('<p class="bw-section-label">02 · Rider &amp; route</p>', unsafe_allow_html=True)
+        st.html('<p class="bw-section-label">02 · Rider &amp; route</p>')
         st.subheader("Setup")
 
         labels = position_labels()
@@ -803,9 +805,7 @@ def main() -> None:
                 except Exception:  # noqa: BLE001
                     st.session_state._gpx_center_digest = digest
 
-        st.markdown('<div class="bw-run-wrap">', unsafe_allow_html=True)
         run = st.button("Run prediction", type="primary", use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
 
     last_run = st.session_state.get("_last_run")
     if not run and not last_run:
@@ -896,7 +896,7 @@ def main() -> None:
 
     # --- 3. Results ---
     with st.container(border=True):
-        st.markdown('<p class="bw-section-label">03 · Results</p>', unsafe_allow_html=True)
+        st.html('<p class="bw-section-label">03 · Results</p>')
         st.subheader("Predicted time")
         st.caption(
             f"{source_label_out} · {route_km:.1f} km · "
