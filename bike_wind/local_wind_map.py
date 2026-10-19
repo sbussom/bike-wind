@@ -13,7 +13,7 @@ import requests
 DEFAULT_LAT = 26.7
 DEFAULT_LON = -80.0
 DEFAULT_ZOOM = 9
-WINDY_EMBED_HEIGHT_PX = 320
+WINDY_EMBED_HEIGHT_PX = 280  # compact; fits first viewport without dominating
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
 

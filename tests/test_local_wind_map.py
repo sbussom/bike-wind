@@ -20,9 +20,9 @@ def test_windy_embed_url_has_wind_overlay() -> None:
 
 
 def test_windy_iframe_html_contains_iframe() -> None:
-    html = windy_iframe_html(26.7, -80.0, height_px=320)
+    html = windy_iframe_html(26.7, -80.0, height_px=280)
     assert "<iframe" in html
-    assert "320px" in html
+    assert "280px" in html
 
 
 def test_compass_label_cardinals() -> None:

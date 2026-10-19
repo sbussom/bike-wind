@@ -66,42 +66,125 @@ from bike_wind.weather import hrrr_enabled_by_env
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sample_route.gpx"
 
 st.set_page_config(
-    page_title="Bike Wind Speed",
+    page_title="Bike Wind",
     layout="centered",
     initial_sidebar_state="collapsed",
 )
 
 
 def _apply_theme(dark: bool) -> None:
+    """Calm athletic theme: Syne + Figtree, teal forest accent, soft gradient."""
     if dark:
-        st.markdown(
-            """
-            <style>
-            .stApp { background-color: #0e1117; color: #fafafa; }
-            [data-testid="stHeader"] { background: rgba(14,17,23,0.8); }
-            div[data-testid="stMetricValue"] { color: #fafafa; }
-            div[data-testid="stVerticalBlockBorderWrapper"] {
-                background: #161b22; border: 1px solid #30363d; border-radius: 10px;
-                padding: 0.4rem 0.6rem;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
+        vars_block = """
+        :root {
+          --bw-bg0: #0c1210;
+          --bw-bg1: #14201b;
+          --bw-surface: rgba(22, 32, 28, 0.72);
+          --bw-text: #e7efea;
+          --bw-muted: #8fa398;
+          --bw-accent: #3ecf8e;
+          --bw-accent-dim: #1f6b4a;
+          --bw-line: rgba(62, 207, 142, 0.18);
+          --bw-metric: #f3faf6;
+        }
+        """
     else:
-        st.markdown(
-            """
-            <style>
-            .stApp { background-color: #f7f8fa; color: #111; }
-            [data-testid="stHeader"] { background: rgba(247,248,250,0.9); }
-            div[data-testid="stVerticalBlockBorderWrapper"] {
-                background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px;
-                padding: 0.4rem 0.6rem;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
+        vars_block = """
+        :root {
+          --bw-bg0: #eef3f0;
+          --bw-bg1: #f7faf8;
+          --bw-surface: rgba(255, 255, 255, 0.82);
+          --bw-text: #14201b;
+          --bw-muted: #5c6f66;
+          --bw-accent: #1a6b52;
+          --bw-accent-dim: #0f4334;
+          --bw-line: rgba(26, 107, 82, 0.16);
+          --bw-metric: #0f241c;
+        }
+        """
+    st.markdown(
+        f"""
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
+        <style>
+        {vars_block}
+        .stApp {{
+          background:
+            radial-gradient(1200px 600px at 12% -10%, rgba(62, 207, 142, 0.10), transparent 55%),
+            radial-gradient(900px 500px at 90% 0%, rgba(26, 107, 82, 0.12), transparent 50%),
+            linear-gradient(165deg, var(--bw-bg0), var(--bw-bg1) 55%, var(--bw-bg0));
+          color: var(--bw-text);
+          font-family: "Figtree", sans-serif;
+        }}
+        [data-testid="stHeader"] {{
+          background: transparent;
+        }}
+        h1, h2, h3, .bw-brand {{
+          font-family: "Syne", sans-serif !important;
+          letter-spacing: -0.02em;
+          font-weight: 700 !important;
+        }}
+        .bw-hero {{
+          padding: 0.4rem 0 1.1rem 0;
+          border-bottom: 1px solid var(--bw-line);
+          margin-bottom: 1.25rem;
+        }}
+        .bw-brand {{
+          font-size: clamp(2.4rem, 7vw, 3.4rem);
+          line-height: 1.05;
+          margin: 0;
+          color: var(--bw-text);
+        }}
+        .bw-tagline {{
+          margin: 0.55rem 0 0 0;
+          color: var(--bw-muted);
+          font-size: 1.05rem;
+          max-width: 34rem;
+          line-height: 1.45;
+        }}
+        .bw-section-label {{
+          font-family: "Syne", sans-serif;
+          font-size: 0.78rem;
+          text-transform: uppercase;
+          letter-spacing: 0.14em;
+          color: var(--bw-accent);
+          margin: 0 0 0.35rem 0;
+        }}
+        div[data-testid="stMetricValue"] {{ color: var(--bw-metric); }}
+        div[data-testid="stVerticalBlockBorderWrapper"] {{
+          background: var(--bw-surface);
+          border: 1px solid var(--bw-line);
+          border-radius: 14px;
+          padding: 0.85rem 1rem 1rem;
+          backdrop-filter: blur(8px);
+        }}
+        div.stButton > button {{
+          min-height: 44px;
+          border-radius: 10px;
+          font-family: "Figtree", sans-serif;
+          font-weight: 600;
+        }}
+        div.stButton > button[kind="primary"] {{
+          background: var(--bw-accent) !important;
+          border-color: var(--bw-accent) !important;
+          color: #04140e !important;
+        }}
+        .bw-run-wrap {{
+          position: sticky;
+          bottom: 0.5rem;
+          z-index: 20;
+          padding: 0.65rem 0 0.25rem;
+          background: linear-gradient(180deg, transparent, var(--bw-bg1) 35%);
+        }}
+        @media (max-width: 640px) {{
+          .bw-brand {{ font-size: 2.35rem; }}
+          .bw-tagline {{ font-size: 0.98rem; }}
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _init_state() -> None:
@@ -305,55 +388,38 @@ def _on_reset_bike_mass() -> None:
 def main() -> None:
     _init_state()
     _apply_pending_map_center()
-    dark = st.toggle("Dark theme", value=True)
+
+    top_l, top_r = st.columns([4, 1])
+    with top_r:
+        dark = st.toggle("Dark", value=True, help="Dark / light theme")
     _apply_theme(dark)
 
-    st.title("Bike wind speed")
-    st.caption(
-        "Local wind overview + GPX route prediction under forecast wind. "
-        "Climbs are noisier when GPX elevation is coarse."
-    )
+    with top_l:
+        st.markdown(
+            """
+            <div class="bw-hero">
+              <p class="bw-brand">Bike Wind</p>
+              <p class="bw-tagline">
+                Predict ground speed on your route under forecast wind —
+                set when and where, dial rider power, run.
+              </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    # --- Card 0: Local wind map (top) ---
+    strava_cfg = load_strava_config()
+    _handle_oauth_callback(strava_cfg)
+    token = _effective_strava_token(strava_cfg)
+
+    # --- 1. Where & when ---
     with st.container(border=True):
+        st.markdown('<p class="bw-section-label">01 · Where &amp; when</p>', unsafe_allow_html=True)
         st.subheader("Local wind")
-        if st.session_state.get("_pin_auto_centered"):
-            st.caption(
-                "Windy.com wind overlay — pin centered on the loaded route midpoint. "
-                "Tweak below or reset to SE Florida."
-            )
-        else:
-            st.caption(
-                "Windy.com wind overlay (speed colors + streamlines). "
-                "Default: South Florida — pin auto-centers when you load a route."
-            )
-        loc1, loc2, loc3 = st.columns([1, 1, 1])
-        with loc1:
-            st.number_input(
-                "Lat",
-                min_value=-85.0,
-                max_value=85.0,
-                step=0.1,
-                format="%.4f",
-                key="map_lat_input",
-            )
-        with loc2:
-            st.number_input(
-                "Lon",
-                min_value=-180.0,
-                max_value=180.0,
-                step=0.1,
-                format="%.4f",
-                key="map_lon_input",
-            )
-        with loc3:
-            st.write("")
-            st.write("")
-            st.button(
-                "SE Florida default",
-                on_click=_on_reset_map_location,
-                use_container_width=True,
-            )
+        default_dt = datetime.now(timezone.utc).replace(
+            minute=0, second=0, microsecond=0
+        ) + timedelta(hours=3)
+        when = st.datetime_input("Ride datetime (UTC)", value=default_dt)
 
         map_lat = float(st.session_state.map_lat_input)
         map_lon = float(st.session_state.map_lon_input)
@@ -363,25 +429,55 @@ def main() -> None:
         pin = fetch_pin_wind(map_lat, map_lon)
         if pin is not None:
             m1, m2, m3 = st.columns(3)
-            m1.metric("Wind at pin", f"{pin.speed_mph:.1f} mph")
-            m2.metric("From", f"{compass_label(pin.direction_deg)} ({pin.direction_deg:.0f}°)")
+            m1.metric("Wind", f"{pin.speed_mph:.1f} mph")
+            m2.metric("From", f"{compass_label(pin.direction_deg)}")
             if pin.temperature_c is not None:
                 m3.metric("Temp", f"{pin.temperature_c * 9 / 5 + 32:.0f} °F")
             else:
                 m3.metric("Temp", "—")
         else:
-            st.caption("Pin wind sample unavailable (network). Map still loads.")
+            st.caption("Pin wind sample unavailable — map still loads.")
 
         components.html(
             windy_iframe_html(map_lat, map_lon, height_px=WINDY_EMBED_HEIGHT_PX),
             height=WINDY_EMBED_HEIGHT_PX + 8,
             scrolling=False,
         )
-        st.caption("Embed © Windy.com — overlay=wind · metricWind=mph")
 
-    # --- Card 1: Rider / aero ---
+        with st.expander("Map pin", expanded=False):
+            loc1, loc2, loc3 = st.columns([1, 1, 1])
+            with loc1:
+                st.number_input(
+                    "Lat",
+                    min_value=-85.0,
+                    max_value=85.0,
+                    step=0.1,
+                    format="%.4f",
+                    key="map_lat_input",
+                )
+            with loc2:
+                st.number_input(
+                    "Lon",
+                    min_value=-180.0,
+                    max_value=180.0,
+                    step=0.1,
+                    format="%.4f",
+                    key="map_lon_input",
+                )
+            with loc3:
+                st.write("")
+                st.write("")
+                st.button(
+                    "SE Florida",
+                    on_click=_on_reset_map_location,
+                    use_container_width=True,
+                )
+            st.caption("Pin auto-centers on the loaded route after you run.")
+
+    # --- 2. Rider & route ---
     with st.container(border=True):
-        st.subheader("Rider & aero")
+        st.markdown('<p class="bw-section-label">02 · Rider &amp; route</p>', unsafe_allow_html=True)
+        st.subheader("Setup")
 
         labels = position_labels()
         current_label = POSITION_PRESETS[st.session_state.position_key].label
@@ -397,17 +493,10 @@ def main() -> None:
             if not st.session_state.bike_mass_manual:
                 _apply_bike_kg(POSITION_PRESETS[position_key].bike_mass_kg, manual=False)
 
-        preset = POSITION_PRESETS[st.session_state.position_key]
-        st.caption(
-            f"Preset Cd={preset.cd:.2f}, A={preset.area_m2:.2f} m² · "
-            f"default bike {preset.bike_mass_kg:.1f} kg"
-        )
-
-        st.markdown("**Rider weight**")
-        rw1, rw2 = st.columns(2)
+        rw1, rw2, rw3 = st.columns([1, 1, 1.2])
         with rw1:
             st.number_input(
-                "kg",
+                "Rider kg",
                 min_value=40.0,
                 max_value=150.0,
                 step=0.5,
@@ -416,12 +505,20 @@ def main() -> None:
             )
         with rw2:
             st.number_input(
-                "lbs",
+                "Rider lbs",
                 min_value=88.0,
                 max_value=330.0,
                 step=1.0,
                 key="rider_lb_input",
                 on_change=_on_rider_lb,
+            )
+        with rw3:
+            power_w = st.number_input(
+                "Sustained power (W)",
+                min_value=50,
+                max_value=600,
+                step=10,
+                key="power_w",
             )
         st.session_state.rider_kg = float(st.session_state.rider_kg_input)
 
@@ -429,161 +526,79 @@ def main() -> None:
         for col, kg in zip(preset_cols, RIDER_WEIGHT_PRESETS_KG):
             with col:
                 st.button(
-                    f"{int(kg)}",
+                    f"{int(kg)} kg",
                     key=f"wpreset_{int(kg)}",
                     use_container_width=True,
                     on_click=_on_weight_preset,
                     args=(kg,),
                 )
 
-        st.markdown("**Bike weight**")
-        bw1, bw2 = st.columns(2)
-        with bw1:
-            st.number_input(
-                "Bike kg",
-                min_value=4.0,
-                max_value=20.0,
-                step=0.1,
-                key="bike_kg_input",
-                on_change=_on_bike_kg,
-            )
-        with bw2:
-            st.number_input(
-                "Bike lbs",
-                min_value=9.0,
-                max_value=44.0,
-                step=0.2,
-                key="bike_lb_input",
-                on_change=_on_bike_lb,
-            )
-        st.session_state.bike_kg = float(st.session_state.bike_kg_input)
-        if st.session_state.bike_mass_manual:
-            st.button(
-                "Reset bike weight to position default",
-                on_click=_on_reset_bike_mass,
-            )
-
-        power_w = st.number_input(
-            "Sustained power (W)",
-            min_value=50,
-            max_value=600,
-            step=10,
-            key="power_w",
-        )
-
-        a1, a2 = st.columns(2)
-        with a1:
-            full_aero = st.checkbox(
-                "Full aero helmet + kit (−0.05 Cd, −0.02 A)",
-                key="full_aero_kit",
-            )
-        with a2:
-            non_aero = st.checkbox(
-                "Non-aero / no helmet (+0.03 Cd)",
-                key="non_aero",
-            )
-        if full_aero and non_aero:
-            st.caption("Both kit toggles on — applying full aero kit only.")
-
-        with st.expander("Advanced", expanded=False):
-            st.number_input(
-                "Rider height (cm)",
-                min_value=140.0,
-                max_value=210.0,
-                step=0.5,
-                key="height_cm_input",
-                on_change=_on_height_cm,
-                help="Maps to ~riding wind height for log-profile correction; effect is small.",
-            )
-            st.caption(
-                f"Wind height ≈ {standing_height_to_wind_z_m(st.session_state.height_cm):.2f} m "
-                f"(from {st.session_state.height_cm:.0f} cm stature)."
-            )
-
-        aero = resolve_aero(
-            st.session_state.position_key,
-            full_aero_kit=bool(full_aero),
-            non_aero=bool(non_aero),
-            bike_mass_kg=float(st.session_state.bike_kg),
-        )
-        st.caption(
-            f"Effective Cd={aero.cd:.2f}, A={aero.area_m2:.2f} m² · "
-            f"total mass {st.session_state.rider_kg + aero.bike_mass_kg:.1f} kg"
-        )
-
-    strava_cfg = load_strava_config()
-    _handle_oauth_callback(strava_cfg)
-    token = _effective_strava_token(strava_cfg)
-
-    # --- Card 2: Route / time (GPX primary) ---
-    with st.container(border=True):
-        st.subheader("Route & time")
-        default_dt = datetime.now(timezone.utc).replace(
-            minute=0, second=0, microsecond=0
-        ) + timedelta(hours=3)
-        when = st.datetime_input("Ride datetime (UTC)", value=default_dt)
-        target_raw = st.text_input(
-            "Optional KOM / target time (seconds or mm:ss)",
-            value="",
-            placeholder="e.g. 12:30 or 750",
-            help="Leave blank to skip required-power vs sustainable comparison.",
-        )
-        prefer_hrrr = st.toggle(
-            "Prefer NOAA HRRR wind (CONUS, ~3 km)",
-            value=hrrr_enabled_by_env(),
-            help=(
-                "Uses Open-Meteo's gfs_hrrr model when the route is in CONUS. "
-                "Falls back to Open-Meteo otherwise. Default off."
-            ),
-        )
-
         use_sample = st.checkbox("Use sample South Florida GPX", value=True)
-        uploaded = st.file_uploader("Or upload a GPX file", type=["gpx"])
+        uploaded = st.file_uploader("Upload GPX", type=["gpx"])
 
         use_strava = False
-        strava_ref_text = ""
-        with st.expander("Strava (optional)", expanded=False):
-            st.caption(
-                "Paste a segment URL/ID or pick a starred segment. "
-                "GPX remains the default route source."
-            )
-
+        with st.expander("Strava route", expanded=False):
             if token:
-                st.success("Strava token available (secrets or Connect Strava).")
+                st.caption("Connected — pick a starred segment or paste an ID.")
             elif strava_cfg.oauth_ready:
                 auth_url = build_authorize_url(
                     strava_cfg.client_id,  # type: ignore[arg-type]
                     strava_cfg.redirect_uri,  # type: ignore[arg-type]
                 )
-                st.markdown(f"[Connect Strava (read scope)]({auth_url})")
+                st.markdown(f"[Connect Strava]({auth_url})")
             else:
-                st.caption(
-                    "No token yet — set `STRAVA_ACCESS_TOKEN` in secrets, or "
-                    "`STRAVA_CLIENT_ID` / `SECRET` / `REDIRECT_URI` for Connect Strava. "
-                    "GPX still works."
-                )
-                presence = strava_secrets_presence()
-                dbg = strava_secrets_debug()
-                key_list = ", ".join(f"`{k}`" for k in dbg["keys"]) if dbg["keys"] else "(none)"
-                nested_note = (
-                    " · Found nested `strava.*` keys"
-                    if dbg.get("nested_strava")
-                    else ""
-                )
-                st.caption(
-                    "Secrets diagnostic (reboot after saving; flat "
-                    "`STRAVA_*` or nested `[strava]` `client_id` / `access_token` OK):  \n"
-                    f"`st.secrets` available: {'yes' if dbg['available'] else 'no'}"
-                    f"{nested_note} · "
-                    f"key names: {key_list}  \n"
-                    f"`CLIENT_ID`: {'set' if presence['CLIENT_ID'] else 'missing'} · "
-                    f"`CLIENT_SECRET`: {'set' if presence['CLIENT_SECRET'] else 'missing'} · "
-                    f"`REDIRECT_URI`: {'set' if presence['REDIRECT_URI'] else 'missing'} · "
-                    f"`ACCESS_TOKEN`: {'set' if presence['ACCESS_TOKEN'] else 'missing'}"
-                )
+                st.caption("Add Strava secrets (access token or OAuth) to enable.")
+
+            if token:
+                if st.button("Load starred segments", key="refresh_starred"):
+                    try:
+                        client = StravaClient(strava_cfg, access_token=token)
+                        st.session_state.starred_segments = [
+                            {
+                                "id": s.segment_id,
+                                "label": (
+                                    f"{s.name} ({s.distance_m/1000:.1f} km, "
+                                    f"{s.average_grade:.1f}%)"
+                                ),
+                                "distance_m": s.distance_m,
+                                "average_grade": s.average_grade,
+                                "name": s.name,
+                            }
+                            for s in client.list_starred()
+                        ]
+                    except StravaRateLimitError as exc:
+                        st.error(exc.status.message or str(exc))
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"Starred fetch failed: {exc}")
+
+                starred = st.session_state.starred_segments
+                if starred:
+                    labels_s = [s["label"] for s in starred]
+                    picked = st.radio(
+                        "Starred segment",
+                        options=["(none)"] + labels_s,
+                        key="starred_pick",
+                    )
+                    if picked == "(none)":
+                        if st.session_state.get("use_strava_segment") and st.session_state.get(
+                            "strava_segment_id"
+                        ):
+                            starred_ids = {s["id"] for s in starred}
+                            if st.session_state.strava_segment_id in starred_ids:
+                                st.session_state.use_strava_segment = False
+                    else:
+                        chosen = next(s for s in starred if s["label"] == picked)
+                        _select_strava_segment(
+                            int(chosen["id"]),
+                            name=str(chosen.get("name") or picked.split(" (")[0]),
+                            distance_m=float(chosen.get("distance_m") or 0.0),
+                            average_grade=float(chosen.get("average_grade") or 0.0),
+                        )
+                elif starred is None:
+                    st.caption("Load starred segments to choose one.")
 
             strava_ref_text = st.text_input(
-                "Segment URL or ID",
+                "Or segment URL / ID",
                 placeholder="https://www.strava.com/segments/229781",
                 key="strava_ref_input",
             )
@@ -615,70 +630,90 @@ def main() -> None:
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"Resolve failed: {exc}")
 
-            # Starred / saved segments
-            if token:
-                st.markdown("**Starred segments**")
-                if st.button("Refresh starred", key="refresh_starred"):
-                    try:
-                        client = StravaClient(strava_cfg, access_token=token)
-                        st.session_state.starred_segments = [
-                            {
-                                "id": s.segment_id,
-                                "label": (
-                                    f"{s.name} ({s.distance_m/1000:.1f} km, "
-                                    f"{s.average_grade:.1f}%)"
-                                ),
-                                "distance_m": s.distance_m,
-                                "average_grade": s.average_grade,
-                                "name": s.name,
-                            }
-                            for s in client.list_starred()
-                        ]
-                    except StravaRateLimitError as exc:
-                        st.error(exc.status.message or str(exc))
-                    except Exception as exc:  # noqa: BLE001
-                        st.error(f"Starred fetch failed: {exc}")
-
-                starred = st.session_state.starred_segments
-                if starred is None:
-                    st.caption("Click **Refresh starred** to load saved segments.")
-                elif not starred:
-                    st.caption("No starred segments returned.")
-                else:
-                    labels = [s["label"] for s in starred]
-                    picked = st.radio(
-                        "Select a starred segment",
-                        options=["(none)"] + labels,
-                        key="starred_pick",
+            if st.session_state.strava_meta and st.session_state.strava_segment_id:
+                m = st.session_state.strava_meta
+                st.caption(
+                    f"Selected: **{m['name']}** · id {m['segment_id']}"
+                    + (
+                        f" · {m['distance_m']/1000:.2f} km"
+                        if m.get("distance_m")
+                        else ""
                     )
-                    if picked == "(none)":
-                        if st.session_state.get("use_strava_segment") and st.session_state.get(
-                            "strava_segment_id"
-                        ):
-                            # Only clear if the active id is from this list
-                            starred_ids = {s["id"] for s in starred}
-                            if st.session_state.strava_segment_id in starred_ids:
-                                st.session_state.use_strava_segment = False
-                    else:
-                        chosen = next(s for s in starred if s["label"] == picked)
-                        _select_strava_segment(
-                            int(chosen["id"]),
-                            name=str(chosen.get("name") or picked.split(" (")[0]),
-                            distance_m=float(chosen.get("distance_m") or 0.0),
-                            average_grade=float(chosen.get("average_grade") or 0.0),
-                        )
+                )
+                use_strava = st.checkbox(
+                    "Use Strava instead of GPX",
+                    key="use_strava_segment",
+                )
 
-            # Explore stays gated
+        # Defaults for advanced (may be overridden in expander)
+        full_aero = st.session_state.get("full_aero_kit", False)
+        non_aero = st.session_state.get("non_aero", False)
+        prefer_hrrr = hrrr_enabled_by_env()
+        target_raw = ""
+
+        with st.expander("Advanced / troubleshooting", expanded=False):
+            st.markdown("**Bike & aero**")
+            bw1, bw2 = st.columns(2)
+            with bw1:
+                st.number_input(
+                    "Bike kg",
+                    min_value=4.0,
+                    max_value=20.0,
+                    step=0.1,
+                    key="bike_kg_input",
+                    on_change=_on_bike_kg,
+                )
+            with bw2:
+                st.number_input(
+                    "Bike lbs",
+                    min_value=9.0,
+                    max_value=44.0,
+                    step=0.2,
+                    key="bike_lb_input",
+                    on_change=_on_bike_lb,
+                )
+            st.session_state.bike_kg = float(st.session_state.bike_kg_input)
+            if st.session_state.bike_mass_manual:
+                st.button("Reset bike to position default", on_click=_on_reset_bike_mass)
+
+            a1, a2 = st.columns(2)
+            with a1:
+                full_aero = st.checkbox(
+                    "Full aero kit (−Cd / −A)",
+                    key="full_aero_kit",
+                )
+            with a2:
+                non_aero = st.checkbox(
+                    "Non-aero / no helmet (+Cd)",
+                    key="non_aero",
+                )
+
+            st.number_input(
+                "Rider height (cm)",
+                min_value=140.0,
+                max_value=210.0,
+                step=0.5,
+                key="height_cm_input",
+                on_change=_on_height_cm,
+            )
+            target_raw = st.text_input(
+                "KOM / target time (mm:ss or seconds)",
+                value="",
+                placeholder="12:30",
+                key="target_time_input",
+            )
+            prefer_hrrr = st.toggle(
+                "Prefer NOAA HRRR (CONUS)",
+                value=hrrr_enabled_by_env(),
+                key="prefer_hrrr_toggle",
+            )
+
             with st.expander("Explore Segments", expanded=False):
                 if not strava_cfg.extended_access:
-                    st.caption(
-                        "Requires Extended Access — set `STRAVA_EXTENDED_ACCESS=true` "
-                        "when approved. Currently disabled."
-                    )
+                    st.caption("Requires `STRAVA_EXTENDED_ACCESS=true`.")
                 elif not token:
-                    st.caption("Needs a Strava token to explore.")
+                    st.caption("Needs a Strava token.")
                 else:
-                    st.caption("Top 10 ride segments in a bounding box.")
                     b1, b2, b3, b4 = st.columns(4)
                     sw_lat = b1.number_input("SW lat", value=26.05, format="%.4f")
                     sw_lon = b2.number_input("SW lon", value=-80.20, format="%.4f")
@@ -707,7 +742,7 @@ def main() -> None:
                     if explore:
                         elabels = [h["label"] for h in explore]
                         epick = st.radio(
-                            "Select explored segment",
+                            "Explored segment",
                             options=["(none)"] + elabels,
                             key="explore_pick",
                         )
@@ -720,20 +755,38 @@ def main() -> None:
                                 average_grade=float(chosen.get("average_grade") or 0.0),
                             )
 
-            if st.session_state.strava_meta and st.session_state.strava_segment_id:
-                m = st.session_state.strava_meta
-                st.info(
-                    f"**{m['name']}** · id {m['segment_id']}"
-                    + (
-                        f" · {m['distance_m']/1000:.2f} km · avg grade {m['average_grade']:.1f}%"
-                        if m.get("distance_m")
+            if not token and not strava_cfg.oauth_ready:
+                with st.expander("Secrets diagnostic", expanded=False):
+                    presence = strava_secrets_presence()
+                    dbg = strava_secrets_debug()
+                    key_list = (
+                        ", ".join(f"`{k}`" for k in dbg["keys"]) if dbg["keys"] else "(none)"
+                    )
+                    nested_note = (
+                        " · Found nested `strava.*` keys"
+                        if dbg.get("nested_strava")
                         else ""
                     )
-                )
-                use_strava = st.checkbox(
-                    "Use this Strava segment instead of GPX",
-                    key="use_strava_segment",
-                )
+                    st.caption(
+                        f"`st.secrets` available: {'yes' if dbg['available'] else 'no'}"
+                        f"{nested_note} · keys: {key_list}  \n"
+                        f"`CLIENT_ID`: {'set' if presence['CLIENT_ID'] else 'missing'} · "
+                        f"`CLIENT_SECRET`: {'set' if presence['CLIENT_SECRET'] else 'missing'} · "
+                        f"`REDIRECT_URI`: {'set' if presence['REDIRECT_URI'] else 'missing'} · "
+                        f"`ACCESS_TOKEN`: {'set' if presence['ACCESS_TOKEN'] else 'missing'}"
+                    )
+
+        aero = resolve_aero(
+            st.session_state.position_key,
+            full_aero_kit=bool(full_aero),
+            non_aero=bool(non_aero),
+            bike_mass_kg=float(st.session_state.bike_kg),
+        )
+        st.caption(
+            f"{POSITION_PRESETS[aero.position_key].label} · "
+            f"Cd·A={aero.cd * aero.area_m2:.3f} · "
+            f"total {st.session_state.rider_kg + aero.bike_mass_kg:.1f} kg"
+        )
 
         # Preview-center Windy when a custom GPX is uploaded (before Run)
         if uploaded is not None and not use_sample and not use_strava:
@@ -747,14 +800,16 @@ def main() -> None:
                     if _pin_needs_recenter(mid_lat, mid_lon):
                         _queue_map_center(mid_lat, mid_lon)
                         st.rerun()
-                except Exception:  # noqa: BLE001 — keep form usable if GPX is bad
+                except Exception:  # noqa: BLE001
                     st.session_state._gpx_center_digest = digest
 
-        run = st.button("Run prediction", type="primary")
+        st.markdown('<div class="bw-run-wrap">', unsafe_allow_html=True)
+        run = st.button("Run prediction", type="primary", use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     last_run = st.session_state.get("_last_run")
     if not run and not last_run:
-        st.info("Adjust the wind pin, rider setup, and GPX — then run prediction.")
+        st.caption("Set wind time and rider setup, then run prediction.")
         return
 
     if run:
@@ -839,13 +894,68 @@ def main() -> None:
         position_key_out = last_run["position_key"]
         cda_out = last_run["cda"]
 
-    # --- Card 3: Route wind-colored map ---
+    # --- 3. Results ---
     with st.container(border=True):
-        st.subheader("Route map")
+        st.markdown('<p class="bw-section-label">03 · Results</p>', unsafe_allow_html=True)
+        st.subheader("Predicted time")
         st.caption(
-            "Route colored teal (tailwind) → red (headwind). "
-            f"{source_label_out} · {route_km:.1f} km"
+            f"{source_label_out} · {route_km:.1f} km · "
+            f"{POSITION_PRESETS[position_key_out].label} · Cd·A={cda_out:.3f}"
         )
+
+        if result.weather_message and not result.weather_ok:
+            st.warning(result.weather_message)
+        elif result.weather_ok:
+            src = "HRRR" if result.weather_source == "hrrr" else "Open-Meteo"
+            st.caption(
+                f"{src} · along-track {result.mean_wind_along_mps:+.1f} m/s "
+                f"(head {result.mean_headwind_mps:.1f} · tail {result.mean_tailwind_mps:.1f})"
+            )
+
+        band = result.time_band
+        eta = result.eta_with_wind_s
+        if band is not None:
+            m1, m2, m3 = st.columns(3)
+            m1.metric(
+                "ETA with wind",
+                format_duration(band.eta_s),
+                delta=f"{format_duration(band.eta_low_s)}–{format_duration(band.eta_high_s)}",
+                delta_color="off",
+            )
+            m2.metric("ETA calm", format_duration(result.eta_no_wind_s))
+            avg = (
+                sum(result.speeds_with_wind_kmh) / len(result.speeds_with_wind_kmh)
+                if result.speeds_with_wind_kmh
+                else 0.0
+            )
+            m3.metric("Avg speed", f"{avg:.1f} km/h")
+            st.caption(band.note)
+        else:
+            m1, m2, m3 = st.columns(3)
+            m1.metric("ETA with wind", format_duration(eta))
+            m2.metric("ETA calm", format_duration(result.eta_no_wind_s))
+            avg = (
+                sum(result.speeds_with_wind_kmh) / len(result.speeds_with_wind_kmh)
+                if result.speeds_with_wind_kmh
+                else 0.0
+            )
+            m3.metric("Avg speed", f"{avg:.1f} km/h")
+
+        if result.target_power is not None:
+            tp = result.target_power
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Required power", f"{tp.required_power_w:.0f} W")
+            c2.metric("Your sustainable", f"{tp.sustainable_power_w:.0f} W")
+            c3.metric("Ratio", f"{tp.ratio:.2f}×")
+            if tp.implausible:
+                st.error(tp.message)
+            elif tp.achievable:
+                st.success(tp.message)
+            else:
+                st.warning(tp.message)
+
+        st.markdown("**Route map**")
+        st.caption("Teal = tailwind · red = headwind")
         try:
             fmap = build_wind_route_map(
                 result.lats,
@@ -858,150 +968,81 @@ def main() -> None:
             st_folium(
                 fmap,
                 width=None,
-                height=max(MAP_MIN_HEIGHT_PX, 360),
+                height=max(MAP_MIN_HEIGHT_PX, 320),
                 returned_objects=[],
                 use_container_width=True,
             )
         except Exception as exc:  # noqa: BLE001
             st.warning(f"Map unavailable: {exc}")
 
-    # --- Card 4: Results ---
-    with st.container(border=True):
-        st.subheader("Results")
-        st.caption(
-            f"{POSITION_PRESETS[position_key_out].label} · Cd·A={cda_out:.3f} · "
-            f"{route_n} points"
-        )
-        st.info(
-            "Decision aid, not a fortune teller. Forecast accuracy degrades past day 5; "
-            "climbs are noisier when GPX elevation/grade is coarse."
-        )
-        with st.expander("Reliability & back-test notes", expanded=False):
-            st.markdown(
-                r"""
-- **Flat roads:** expect roughly ±5% on predicted time vs known sustained-power files when
-  wind and mass are well specified.
-- **Climbs:** noisier — GPX grade noise and elevation smoothing dominate.
-- **Assumptions (conservative):** open-grass roughness \(z_0=0.03\), tuck −15% area on
-  descents only, crosswind adds drag (never free speed).
-- **Wind sources:** Open-Meteo primary (cached). Optional HRRR via toggle / `BIKE_WIND_HRRR`.
-                """
-            )
-
-        if result.weather_message and not result.weather_ok:
-            st.warning(result.weather_message)
-        elif result.weather_ok:
-            src = "HRRR" if result.weather_source == "hrrr" else "Open-Meteo"
-            st.success(
-                f"{src} wind applied (ρ ≈ {result.rho_mean:.3f} kg/m³). "
-                f"Mean along-track {result.mean_wind_along_mps:+.1f} m/s "
-                f"(head {result.mean_headwind_mps:.1f} · tail {result.mean_tailwind_mps:.1f})."
-            )
-            if result.weather_message:
-                st.caption(result.weather_message)
-
-        band = result.time_band
-        eta = result.eta_with_wind_s
-        if band is not None:
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric(
-                "ETA with wind",
-                format_duration(band.eta_s),
-                delta=f"band {format_duration(band.eta_low_s)}–{format_duration(band.eta_high_s)}",
-                delta_color="off",
-            )
-            m2.metric("ETA calm air", format_duration(result.eta_no_wind_s))
-            avg = (
-                sum(result.speeds_with_wind_kmh) / len(result.speeds_with_wind_kmh)
-                if result.speeds_with_wind_kmh
-                else 0.0
-            )
-            m3.metric("Avg speed (wind)", f"{avg:.1f} km/h")
-            m4.metric("Horizon", f"{band.horizon_days:.1f} d")
-            st.caption(band.note)
-        else:
-            m1, m2, m3 = st.columns(3)
-            m1.metric("ETA with wind", format_duration(eta))
-            m2.metric("ETA calm air", format_duration(result.eta_no_wind_s))
-            avg = (
-                sum(result.speeds_with_wind_kmh) / len(result.speeds_with_wind_kmh)
-                if result.speeds_with_wind_kmh
-                else 0.0
-            )
-            m3.metric("Avg speed (wind)", f"{avg:.1f} km/h")
-
-        if result.target_power is not None:
-            tp = result.target_power
-            st.markdown("**KOM / target power**")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Required power", f"{tp.required_power_w:.0f} W")
-            c2.metric("Your sustainable", f"{tp.sustainable_power_w:.0f} W")
-            c3.metric("Ratio", f"{tp.ratio:.2f}×")
-            if tp.implausible:
-                st.error(tp.message)
-            elif tp.achievable:
-                st.success(tp.message)
-            else:
-                st.warning(tp.message)
-
-        fig, ax = plt.subplots(figsize=(9, 4.2))
-        bg = "#0e1117" if dark else "#f7f8fa"
-        fg = "#fafafa" if dark else "#111111"
+        fig, ax = plt.subplots(figsize=(9, 3.8))
+        bg = "#0c1210" if dark else "#f7faf8"
+        fg = "#e7efea" if dark else "#14201b"
+        accent = "#3ecf8e" if dark else "#1a6b52"
         fig.patch.set_facecolor(bg)
         ax.set_facecolor(bg)
         ax.plot(
             result.distances_km,
             result.speeds_no_wind_kmh,
             label="No wind",
-            color="#8b9cb3",
-            linewidth=1.6,
+            color="#8fa398",
+            linewidth=1.5,
             linestyle="--",
         )
         ax.plot(
             result.distances_km,
             result.speeds_with_wind_kmh,
             label="With wind" if result.weather_ok else "With wind (unavailable)",
-            color="#3ecf8e" if dark else "#0b6e4f",
+            color=accent,
             linewidth=2.0,
         )
         ax.set_xlabel("Distance (km)", color=fg)
         ax.set_ylabel("Ground speed (km/h)", color=fg)
-        ax.set_title("Speed vs distance", color=fg)
         ax.tick_params(colors=fg)
         for spine in ax.spines.values():
-            spine.set_color("#444" if dark else "#ccc")
-        legend = ax.legend(facecolor=bg, edgecolor="#444" if dark else "#ccc")
+            spine.set_color("#3a4a42" if dark else "#c5d0ca")
+        legend = ax.legend(facecolor=bg, edgecolor="#3a4a42" if dark else "#c5d0ca")
         for text in legend.get_texts():
             text.set_color(fg)
-        ax.grid(True, alpha=0.25, color=fg)
+        ax.grid(True, alpha=0.22, color=fg)
         fig.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
 
         if len(result.bins) > 1:
-            st.markdown("**Distance bins**")
-            rows = []
-            for b in result.bins:
-                flag = "⚠" if b.implausible else ""
-                rows.append(
-                    {
-                        "Bin": b.index,
-                        "km": f"{b.start_km:.1f}–{b.end_km:.1f}",
-                        "Grade %": f"{b.avg_grade_pct:.1f}",
-                        "Wind": b.wind_label,
-                        "km/h wind": f"{b.speed_with_wind_kmh:.1f}",
-                        "km/h calm": f"{b.speed_no_wind_kmh:.1f}",
-                        "Time": format_duration(b.time_with_wind_s),
-                        "P@pace W": f"{b.required_power_w:.0f}" if b.required_power_w else "—",
-                        "Flag": flag,
-                    }
-                )
-            st.dataframe(rows, use_container_width=True, hide_index=True)
+            with st.expander("Distance bins", expanded=False):
+                rows = []
+                for b in result.bins:
+                    rows.append(
+                        {
+                            "Bin": b.index,
+                            "km": f"{b.start_km:.1f}–{b.end_km:.1f}",
+                            "Grade %": f"{b.avg_grade_pct:.1f}",
+                            "Wind": b.wind_label,
+                            "km/h wind": f"{b.speed_with_wind_kmh:.1f}",
+                            "km/h calm": f"{b.speed_no_wind_kmh:.1f}",
+                            "Time": format_duration(b.time_with_wind_s),
+                            "P@pace W": (
+                                f"{b.required_power_w:.0f}" if b.required_power_w else "—"
+                            ),
+                        }
+                    )
+                st.dataframe(rows, use_container_width=True, hide_index=True)
         elif len(result.bins) == 1:
             b = result.bins[0]
             st.caption(
-                f"Whole-route summary: {b.wind_label}, grade {b.avg_grade_pct:.1f}%, "
-                f"{b.speed_with_wind_kmh:.1f} km/h with wind vs {b.speed_no_wind_kmh:.1f} calm."
+                f"{b.wind_label} · grade {b.avg_grade_pct:.1f}% · "
+                f"{b.speed_with_wind_kmh:.1f} km/h with wind"
+            )
+
+        with st.expander("Reliability notes", expanded=False):
+            st.markdown(
+                r"""
+- **Flat roads:** roughly ±5% on predicted time when wind and mass are well specified.
+- **Climbs:** noisier — GPX grade noise dominates.
+- **Assumptions:** \(z_0=0.03\), tuck −15% A on descents, crosswind adds drag only.
+- **Wind:** Open-Meteo primary (cached); optional HRRR in Advanced.
+                """
             )
 
 
