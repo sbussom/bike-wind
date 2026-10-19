@@ -37,22 +37,20 @@ def test_get_setting_missing_returns_none(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_get_bool_setting(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("STRAVA_EXTENDED_ACCESS", "true")
-    assert get_bool_setting("STRAVA_EXTENDED_ACCESS") is True
-    monkeypatch.setenv("STRAVA_EXTENDED_ACCESS", "false")
-    assert get_bool_setting("STRAVA_EXTENDED_ACCESS") is False
+    monkeypatch.setenv("BIKE_WIND_HRRR", "true")
+    assert get_bool_setting("BIKE_WIND_HRRR") is True
+    monkeypatch.setenv("BIKE_WIND_HRRR", "false")
+    assert get_bool_setting("BIKE_WIND_HRRR") is False
 
 
 def test_load_strava_config_uses_env(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("STRAVA_CLIENT_ID", "cid")
     monkeypatch.setenv("STRAVA_CLIENT_SECRET", "sec")
     monkeypatch.setenv("STRAVA_REDIRECT_URI", "https://example.com")
-    monkeypatch.setenv("STRAVA_EXTENDED_ACCESS", "1")
     with patch("bike_wind.settings._secret_get", return_value=None):
         cfg = load_strava_config(cache_dir=tmp_path)
     assert cfg.oauth_ready is True
     assert cfg.client_id == "cid"
-    assert cfg.extended_access is True
 
 
 def test_load_strava_config_falls_back_to_secrets(
@@ -63,7 +61,6 @@ def test_load_strava_config_falls_back_to_secrets(
         "STRAVA_CLIENT_SECRET",
         "STRAVA_REDIRECT_URI",
         "STRAVA_ACCESS_TOKEN",
-        "STRAVA_EXTENDED_ACCESS",
     ):
         monkeypatch.delenv(key, raising=False)
 

@@ -32,11 +32,6 @@ _STRAVA_NESTED_ALIASES: dict[str, tuple[str, ...]] = {
         "ACCESS_TOKEN",
         "access_token",
     ),
-    "STRAVA_EXTENDED_ACCESS": (
-        "STRAVA_EXTENDED_ACCESS",
-        "EXTENDED_ACCESS",
-        "extended_access",
-    ),
     # Optional future refresh path (not required for access-token usage).
     "STRAVA_REFRESH_TOKEN": (
         "STRAVA_REFRESH_TOKEN",

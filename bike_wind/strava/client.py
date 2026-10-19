@@ -1,4 +1,4 @@
-"""Strava API client: segments, streams, starred, explore (gated)."""
+"""Strava API client: segments, streams, starred, explore."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any, Sequence
 import requests
 
 from bike_wind.gpx.parse import RouteStreams
-from bike_wind.settings import get_bool_setting, get_setting
+from bike_wind.settings import get_setting
 from bike_wind.strava.cache import CachedSegment, SegmentCache
 from bike_wind.strava.rate_limit import RateLimitExceeded, RateLimiter, RateLimitStatus
 from bike_wind.strava.urls import ParsedStravaRef, parse_strava_segment_ref
@@ -26,7 +26,6 @@ class StravaConfig:
     client_id: str | None
     client_secret: str | None
     redirect_uri: str | None
-    extended_access: bool
     cache_dir: Path
 
     @property
@@ -89,7 +88,6 @@ class StravaRateLimitError(StravaError):
 
 def load_strava_config(*, cache_dir: Path | None = None) -> StravaConfig:
     """Load Strava settings from env, then Streamlit secrets (same key names)."""
-    extended = get_bool_setting("STRAVA_EXTENDED_ACCESS", default=False)
     cache_raw = get_setting("BIKE_WIND_CACHE")
     cache = cache_dir or Path(cache_raw or REPO_CACHE)
     return StravaConfig(
@@ -97,7 +95,6 @@ def load_strava_config(*, cache_dir: Path | None = None) -> StravaConfig:
         client_id=get_setting("STRAVA_CLIENT_ID"),
         client_secret=get_setting("STRAVA_CLIENT_SECRET"),
         redirect_uri=get_setting("STRAVA_REDIRECT_URI"),
-        extended_access=extended,
         cache_dir=cache,
     )
 
@@ -249,12 +246,7 @@ class StravaClient:
         *,
         activity_type: str = "riding",
     ) -> list[ExploreHit]:
-        """Explore segments in bbox. Requires STRAVA_EXTENDED_ACCESS=true."""
-        if not self.config.extended_access:
-            raise StravaError(
-                "Explore Segments requires Extended Access "
-                "(set STRAVA_EXTENDED_ACCESS=true when approved)."
-            )
+        """Explore segments in bbox (GET /segments/explore). Needs a normal token."""
         if len(bounds) != 4:
             raise ValueError("bounds must be [sw_lat, sw_lng, ne_lat, ne_lng]")
         data = self._get(
@@ -345,7 +337,11 @@ class StravaClient:
         if resp.status_code == 401:
             raise StravaAuthError("Strava unauthorized — token missing or expired")
         if resp.status_code == 403:
-            raise StravaAuthError("Strava forbidden — check scopes / Extended Access")
+            raise StravaAuthError(
+                "Strava forbidden (HTTP 403) — token lacks required OAuth scope "
+                f"(need `read` for {path}). Re-authorize with Connect Strava, or "
+                "use an access token that includes `read`."
+            )
         if resp.status_code == 429:
             status = self.limiter.status()
             raise StravaRateLimitError(

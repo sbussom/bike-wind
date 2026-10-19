@@ -40,7 +40,6 @@ Each setting is read from **env first**, then `st.secrets` of the same name (Str
 | `STRAVA_CLIENT_ID` | OAuth app client id (Connect with Strava) |
 | `STRAVA_CLIENT_SECRET` | OAuth app client secret |
 | `STRAVA_REDIRECT_URI` | Must match Strava callback (Cloud app root URL) |
-| `STRAVA_EXTENDED_ACCESS` | Default `false`. Set `true` to enable nearby Explore map |
 | `BIKE_WIND_HRRR` | Default `false`. Set `true` so the HRRR UI toggle defaults on |
 | `BIKE_WIND_CACHE` | Root for SQLite caches (Strava + weather forecasts) |
 

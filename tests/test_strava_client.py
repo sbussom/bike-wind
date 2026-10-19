@@ -25,7 +25,6 @@ def _config(tmp_path: Path, **kwargs) -> StravaConfig:
         client_id="cid",
         client_secret="sec",
         redirect_uri="http://localhost:8501",
-        extended_access=False,
         cache_dir=tmp_path,
     )
     base.update(kwargs)
@@ -181,13 +180,7 @@ def test_list_starred_paginates_until_exhausted(tmp_path: Path) -> None:
     assert starred[-1].segment_id == 1016
 
 
-def test_explore_gated_without_flag(tmp_path: Path) -> None:
-    client = StravaClient(_config(tmp_path, extended_access=False))
-    with pytest.raises(StravaError, match="Extended Access"):
-        client.explore([26.0, -80.2, 26.2, -80.0])
-
-
-def test_explore_top_10_with_flag(tmp_path: Path) -> None:
+def test_explore_top_10(tmp_path: Path) -> None:
     session = MagicMock()
     resp = MagicMock()
     resp.status_code = 200
@@ -207,11 +200,21 @@ def test_explore_top_10_with_flag(tmp_path: Path) -> None:
         ]
     }
     session.get.return_value = resp
-    client = StravaClient(_config(tmp_path, extended_access=True), session=session)
+    client = StravaClient(_config(tmp_path), session=session)
     hits = client.explore([26.0, -80.2, 26.2, -80.0])
     assert len(hits) == 10
     assert hits[0].start_lat == pytest.approx(26.1)
     assert hits[0].end_lon == pytest.approx(-80.09)
+
+
+def test_explore_403_mentions_oauth_scope(tmp_path: Path) -> None:
+    session = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 403
+    session.get.return_value = resp
+    client = StravaClient(_config(tmp_path), session=session)
+    with pytest.raises(StravaAuthError, match="read"):
+        client.explore([26.0, -80.2, 26.2, -80.0])
 
 
 def test_rate_limiter_blocks(tmp_path: Path) -> None:

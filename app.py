@@ -544,7 +544,7 @@ def main() -> None:
                     m3.metric("Temp", "—")
 
             nearby: list[ExploreHit] = list(st.session_state.get("explore_hits") or [])
-            if token and strava_cfg.extended_access:
+            if token:
                 c1, c2 = st.columns(2)
                 with c1:
                     do_explore = st.button(
@@ -561,15 +561,12 @@ def main() -> None:
                         st.session_state.explore_hits = nearby
                     except StravaRateLimitError as exc:
                         st.error(exc.status.message or str(exc))
+                    except StravaAuthError as exc:
+                        st.error(str(exc))
                     except Exception as exc:  # noqa: BLE001
                         st.error(f"Explore failed: {exc}")
-            elif token and not strava_cfg.extended_access:
-                st.caption(
-                    "Nearby map needs `STRAVA_EXTENDED_ACCESS=true` (Strava Explore "
-                    "approval) plus a token."
-                )
             else:
-                st.caption("Connect Strava (and enable Explore) to plot nearby segments.")
+                st.caption("Connect Strava (or set an access token) to plot nearby segments.")
 
             try:
                 nearby_map = build_nearby_segments_map(
