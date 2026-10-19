@@ -528,7 +528,6 @@ def main() -> None:
 
     strava_cfg = load_strava_config()
     _handle_oauth_callback(strava_cfg)
-    token = _effective_strava_token(strava_cfg)
     strava_ready = _strava_ready(strava_cfg)
     tok_src = _token_source(strava_cfg)
 
