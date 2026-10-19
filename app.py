@@ -51,7 +51,7 @@ except ImportError:  # pragma: no cover — stale site-packages on Cloud
         }
 
     def strava_secrets_debug():
-        return {"available": False, "keys": []}
+        return {"available": False, "keys": [], "nested_strava": False}
 
 
 from bike_wind.strava import (
@@ -565,10 +565,16 @@ def main() -> None:
                 presence = strava_secrets_presence()
                 dbg = strava_secrets_debug()
                 key_list = ", ".join(f"`{k}`" for k in dbg["keys"]) if dbg["keys"] else "(none)"
+                nested_note = (
+                    " · Found nested `strava.*` keys"
+                    if dbg.get("nested_strava")
+                    else ""
+                )
                 st.caption(
-                    "Secrets diagnostic (reboot after saving; keys must be "
-                    "`STRAVA_CLIENT_ID` / `SECRET` / `REDIRECT_URI` / `ACCESS_TOKEN`):  \n"
-                    f"`st.secrets` available: {'yes' if dbg['available'] else 'no'} · "
+                    "Secrets diagnostic (reboot after saving; flat "
+                    "`STRAVA_*` or nested `[strava]` `client_id` / `access_token` OK):  \n"
+                    f"`st.secrets` available: {'yes' if dbg['available'] else 'no'}"
+                    f"{nested_note} · "
                     f"key names: {key_list}  \n"
                     f"`CLIENT_ID`: {'set' if presence['CLIENT_ID'] else 'missing'} · "
                     f"`CLIENT_SECRET`: {'set' if presence['CLIENT_SECRET'] else 'missing'} · "

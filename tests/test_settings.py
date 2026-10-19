@@ -221,6 +221,7 @@ def test_strava_secrets_debug_lists_keys_not_values(
     with patch.dict("sys.modules", {"streamlit": fake_st}):
         dbg = strava_secrets_debug()
     assert dbg["available"] is True
+    assert dbg["nested_strava"] is True
     assert "STRAVA_CLIENT_ID" in dbg["keys"]
     assert "other" in dbg["keys"]
     assert "strava" in dbg["keys"]
@@ -243,7 +244,72 @@ def test_strava_secrets_debug_unavailable_when_no_streamlit() -> None:
 
     with patch("builtins.__import__", side_effect=fake_import):
         dbg = strava_secrets_debug()
-    assert dbg == {"available": False, "keys": []}
+    assert dbg == {"available": False, "keys": [], "nested_strava": False}
+
+
+def test_secret_get_nested_lowercase_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
+    """User Cloud paste: [strava] client_id / access_token (lowercase)."""
+    for key in (
+        "STRAVA_CLIENT_ID",
+        "STRAVA_CLIENT_SECRET",
+        "STRAVA_REDIRECT_URI",
+        "STRAVA_ACCESS_TOKEN",
+        "STRAVA_REFRESH_TOKEN",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    fake_st = SimpleNamespace(
+        secrets={
+            "strava": {
+                "client_id": "lc-cid",
+                "client_secret": "lc-sec",
+                "access_token": "lc-tok",
+                "refresh_token": "lc-ref",
+            }
+        }
+    )
+    with patch.dict("sys.modules", {"streamlit": fake_st}):
+        assert _secret_get("STRAVA_CLIENT_ID") == "lc-cid"
+        assert _secret_get("STRAVA_CLIENT_SECRET") == "lc-sec"
+        assert _secret_get("STRAVA_ACCESS_TOKEN") == "lc-tok"
+        assert _secret_get("STRAVA_REFRESH_TOKEN") == "lc-ref"
+        assert _secret_get("STRAVA_REDIRECT_URI") is None
+        presence = strava_secrets_presence()
+        assert presence["CLIENT_ID"] is True
+        assert presence["CLIENT_SECRET"] is True
+        assert presence["ACCESS_TOKEN"] is True
+        assert presence["REDIRECT_URI"] is False
+        dbg = strava_secrets_debug()
+        assert dbg["nested_strava"] is True
+        assert "strava.access_token" in dbg["keys"]
+
+
+def test_load_strava_config_lowercase_nested_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    for key in (
+        "STRAVA_CLIENT_ID",
+        "STRAVA_CLIENT_SECRET",
+        "STRAVA_REDIRECT_URI",
+        "STRAVA_ACCESS_TOKEN",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    fake_st = SimpleNamespace(
+        secrets={
+            "strava": {
+                "client_id": "x",
+                "client_secret": "y",
+                "access_token": "live-tok",
+            }
+        }
+    )
+    with patch.dict("sys.modules", {"streamlit": fake_st}):
+        cfg = load_strava_config(cache_dir=tmp_path)
+    assert cfg.token_ready is True
+    assert cfg.access_token == "live-tok"
+    # No redirect_uri → OAuth Connect not ready, but token path works
+    assert cfg.oauth_ready is False
 
 
 def test_load_strava_config_nested_short_aliases(
