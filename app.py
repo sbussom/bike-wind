@@ -230,6 +230,8 @@ def _init_state() -> None:
         st.session_state.strava_refreshed_access_token = None
     if "strava_refreshed_refresh_token" not in st.session_state:
         st.session_state.strava_refreshed_refresh_token = None
+    if "strava_last_error" not in st.session_state:
+        st.session_state.strava_last_error = None
     if "use_strava_segment" not in st.session_state:
         st.session_state.use_strava_segment = False
     if "explore_hits" not in st.session_state:
@@ -348,15 +350,13 @@ def _strava_client(config, *, secrets_only: bool = False) -> StravaClient:
         access = _effective_strava_token(config)
         refresh = _effective_strava_refresh(config)
 
-    client = StravaClient(
+    _ = on_refresh_failed  # reserved for future hooks; clear happens in _run_strava_call
+    return StravaClient(
         config,
         access_token=access,
         refresh_token=refresh,
         on_tokens_refreshed=on_refreshed,
     )
-    # Attach for explore fallback path
-    client._on_refresh_failed_hook = on_refresh_failed  # type: ignore[attr-defined]
-    return client
 
 
 def _run_strava_call(config, fn):
@@ -426,6 +426,8 @@ def _on_disconnect_strava() -> None:
 def _on_reset_strava_session() -> None:
     _clear_strava_session_tokens()
     st.session_state.use_strava_segment = False
+    st.session_state.strava_last_error = None
+    st.session_state._strava_reset_flash = True
 
 
 def _queue_map_center(lat: float, lon: float) -> None:
@@ -670,39 +672,70 @@ def main() -> None:
                     m3.metric("Temp", "—")
 
             nearby: list[ExploreHit] = list(st.session_state.get("explore_hits") or [])
-            if strava_ready:
-                c1, c2 = st.columns(2)
-                with c1:
-                    do_explore = st.button(
-                        "Find nearby segments",
-                        key="explore_nearby_btn",
-                        use_container_width=True,
-                    )
-                with c2:
-                    st.caption(
-                        "Explore needs OAuth scope `read` + Strava Extended Access "
-                        "Tier (app-level, since Sept 2026)."
-                    )
-                if do_explore:
-                    try:
-                        nearby = _run_strava_call(
-                            strava_cfg,
-                            lambda c: _fetch_nearby_explore(c, map_lat, map_lon),
-                        )
-                        st.session_state.explore_hits = nearby
-                        if not nearby:
-                            from bike_wind.strava.errors import ZERO_SEGMENTS
 
-                            st.warning(
-                                ZERO_SEGMENTS.format(lat=map_lat, lon=map_lon)
-                            )
-                    except StravaRateLimitError as exc:
-                        st.error(exc.status.message or str(exc))
-                    except StravaAuthError as exc:
-                        st.error(str(exc))
-                    except Exception as exc:  # noqa: BLE001
-                        st.error(f"Explore failed: {exc}")
-            else:
+            # Always-visible Strava controls (left column — not buried in Advanced).
+            find_col, reset_col = st.columns(2)
+            with find_col:
+                do_explore = st.button(
+                    "Find nearby segments",
+                    key="explore_nearby_btn",
+                    use_container_width=True,
+                    disabled=not strava_ready,
+                    type="primary",
+                )
+            with reset_col:
+                st.button(
+                    "Reset Strava session",
+                    on_click=_on_reset_strava_session,
+                    key="reset_strava_session",
+                    use_container_width=True,
+                    type="secondary",
+                    help=(
+                        "Clears sticky browser tokens so freshly pasted Streamlit "
+                        "`[strava]` secrets are used."
+                    ),
+                )
+            if st.session_state.pop("_strava_reset_flash", None):
+                st.success(
+                    "Strava browser session cleared — using secrets (if set). "
+                    "Click **Find nearby segments** again."
+                )
+            st.caption(
+                "Scope `read` + Strava Extended Access tier for explore. "
+                "If tokens look stuck after updating secrets, click "
+                "**Reset Strava session** (or open the app in a private window)."
+            )
+
+            if do_explore and strava_ready:
+                try:
+                    nearby = _run_strava_call(
+                        strava_cfg,
+                        lambda c: _fetch_nearby_explore(c, map_lat, map_lon),
+                    )
+                    st.session_state.explore_hits = nearby
+                    st.session_state.strava_last_error = None
+                    if not nearby:
+                        from bike_wind.strava.errors import ZERO_SEGMENTS
+
+                        st.warning(
+                            ZERO_SEGMENTS.format(lat=map_lat, lon=map_lon)
+                        )
+                except StravaRateLimitError as exc:
+                    st.session_state.strava_last_error = (
+                        exc.status.message or str(exc)
+                    )
+                except StravaAuthError as exc:
+                    st.session_state.strava_last_error = str(exc)
+                except Exception as exc:  # noqa: BLE001
+                    st.session_state.strava_last_error = f"Explore failed: {exc}"
+
+            if st.session_state.get("strava_last_error"):
+                st.error(st.session_state.strava_last_error)
+                st.caption(
+                    "Still stuck? Click **Reset Strava session** (right of "
+                    "Find nearby segments), then try again."
+                )
+            elif not strava_ready:
                 st.caption(
                     "Connect Strava or set `[strava]` `access_token` (+ `refresh_token`) "
                     "to plot nearby segments."
@@ -813,16 +846,6 @@ def main() -> None:
                 )
             else:
                 st.caption("Connect Strava or paste a segment ID. GPX still works.")
-
-            st.button(
-                "Reset Strava session",
-                on_click=_on_reset_strava_session,
-                key="reset_strava_session",
-                help=(
-                    "Clears sticky browser tokens so freshly pasted Streamlit "
-                    "`[strava]` secrets are used. Do this after updating secrets."
-                ),
-            )
 
             if strava_cfg.oauth_ready and tok_src != "session":
                 auth_url = build_authorize_url(

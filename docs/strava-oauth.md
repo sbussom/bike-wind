@@ -29,7 +29,7 @@ Starred-segment lists were removed from the UI.
 Strava access tokens expire. On HTTP 401 the app POSTs to `https://www.strava.com/oauth/token` with `grant_type=refresh_token`, `client_id`, `client_secret`, and `refresh_token` (from nested `[strava]` secrets or Connect session), then retries.
 
 - **Anonymous visitors use owner secrets first.** A broken Connect/OAuth session no longer blocks secrets.
-- When secrets change, sticky browser tokens are cleared automatically. Use **Reset Strava session** anytime after pasting new secrets.
+- When secrets change, sticky browser tokens are cleared automatically. **Reset Strava session** sits beside **Find nearby segments** on the left (Nearby segments). Private/incognito also clears session.
 - A successful refresh updates **`st.session_state` only**. Streamlit Cloud secrets are **read-only** at runtime.
 - Failed refresh shows Strava’s `error` / `message` (tokens redacted), e.g. invalid refresh token after rotation.
 - Paste matching Access + Refresh from https://www.strava.com/settings/api under `[strava]`, then **Reset Strava session** (or reboot).
