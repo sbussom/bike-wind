@@ -260,10 +260,45 @@ def _effective_strava_token(config) -> str | None:
     return st.session_state.strava_access_token or config.access_token
 
 
+def _effective_strava_refresh(config) -> str | None:
+    """Session refresh token (OAuth or prior refresh) then secrets refresh_token."""
+    return st.session_state.strava_refresh_token or config.refresh_token
+
+
+def _strava_ready(config) -> bool:
+    """True if we have an access token, or can mint one via refresh_token grant."""
+    if _effective_strava_token(config):
+        return True
+    return bool(
+        config.client_id
+        and config.client_secret
+        and _effective_strava_refresh(config)
+    )
+
+
+def _persist_refreshed_tokens(tokens) -> None:
+    """Keep refreshed tokens in session only — Streamlit secrets are read-only."""
+    st.session_state.strava_access_token = tokens.access_token
+    if tokens.refresh_token:
+        st.session_state.strava_refresh_token = tokens.refresh_token
+
+
+def _strava_client(config) -> StravaClient:
+    """Client for explore + segment resolve; auto-refreshes on 401 into session_state."""
+    return StravaClient(
+        config,
+        access_token=_effective_strava_token(config),
+        refresh_token=_effective_strava_refresh(config),
+        on_tokens_refreshed=_persist_refreshed_tokens,
+    )
+
+
 def _token_source(config) -> str:
     if st.session_state.strava_access_token:
         return "session"
     if config.access_token:
+        return "secrets"
+    if _strava_ready(config):
         return "secrets"
     return "none"
 
@@ -494,6 +529,7 @@ def main() -> None:
     strava_cfg = load_strava_config()
     _handle_oauth_callback(strava_cfg)
     token = _effective_strava_token(strava_cfg)
+    strava_ready = _strava_ready(strava_cfg)
     tok_src = _token_source(strava_cfg)
 
     default_dt = datetime.now(timezone.utc).replace(
@@ -544,7 +580,7 @@ def main() -> None:
                     m3.metric("Temp", "—")
 
             nearby: list[ExploreHit] = list(st.session_state.get("explore_hits") or [])
-            if token:
+            if strava_ready:
                 c1, c2 = st.columns(2)
                 with c1:
                     do_explore = st.button(
@@ -556,7 +592,7 @@ def main() -> None:
                     st.caption("Uses Strava explore in a ~10 km box.")
                 if do_explore:
                     try:
-                        client = StravaClient(strava_cfg, access_token=token)
+                        client = _strava_client(strava_cfg)
                         nearby = _fetch_nearby_explore(client, map_lat, map_lon)
                         st.session_state.explore_hits = nearby
                     except StravaRateLimitError as exc:
@@ -566,7 +602,10 @@ def main() -> None:
                     except Exception as exc:  # noqa: BLE001
                         st.error(f"Explore failed: {exc}")
             else:
-                st.caption("Connect Strava (or set an access token) to plot nearby segments.")
+                st.caption(
+                    "Connect Strava or set `[strava]` `access_token` (+ `refresh_token`) "
+                    "to plot nearby segments."
+                )
 
             try:
                 nearby_map = build_nearby_segments_map(
@@ -697,12 +736,12 @@ def main() -> None:
             )
             do_resolve = st.button(
                 "Resolve segment",
-                disabled=not token or not strava_ref_text.strip(),
+                disabled=not strava_ready or not strava_ref_text.strip(),
                 key="strava_resolve_btn",
             )
-            if do_resolve and token and strava_ref_text.strip():
+            if do_resolve and strava_ready and strava_ref_text.strip():
                 try:
-                    client = StravaClient(strava_cfg, access_token=token)
+                    client = _strava_client(strava_cfg)
                     sid, _ref = client.resolve_ref(strava_ref_text)
                     meta = client.get_segment_meta(sid)
                     _select_strava_segment(
@@ -945,8 +984,8 @@ def main() -> None:
             return
 
         try:
-            if use_strava and st.session_state.strava_segment_id and token:
-                client = StravaClient(strava_cfg, access_token=token)
+            if use_strava and st.session_state.strava_segment_id and strava_ready:
+                client = _strava_client(strava_cfg)
                 meta, route = client.load_segment_route(int(st.session_state.strava_segment_id))
                 st.session_state.strava_meta = {
                     "segment_id": meta.segment_id,

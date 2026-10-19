@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -11,6 +12,7 @@ import requests
 from bike_wind.gpx.parse import RouteStreams
 from bike_wind.settings import get_setting
 from bike_wind.strava.cache import CachedSegment, SegmentCache
+from bike_wind.strava.oauth import OAuthTokens, refresh_access_token
 from bike_wind.strava.rate_limit import RateLimitExceeded, RateLimiter, RateLimitStatus
 from bike_wind.strava.urls import ParsedStravaRef, parse_strava_segment_ref
 
@@ -19,6 +21,17 @@ DEFAULT_CACHE_DIR = Path.home() / ".cache" / "bike_wind"
 # Prefer project-local cache when running from repo
 REPO_CACHE = Path(__file__).resolve().parents[2] / ".cache" / "strava"
 
+# Shown when access is dead and refresh cannot recover. Never mentions fake flags.
+TOKEN_RECOVERY_HINT = (
+    "Strava access token is missing or expired, and refresh did not succeed. "
+    "Go to https://www.strava.com/settings/api → copy a fresh Access Token "
+    "(and Refresh Token if shown) → paste into Streamlit Cloud secrets under "
+    "`[strava]` as `access_token` / `refresh_token` → reboot the app. "
+    "Or use Connect with Strava for this browser session. "
+    "Note: Streamlit secrets are read-only at runtime — a successful refresh "
+    "only updates this session until you paste new tokens into secrets."
+)
+
 
 @dataclass(frozen=True)
 class StravaConfig:
@@ -26,6 +39,7 @@ class StravaConfig:
     client_id: str | None
     client_secret: str | None
     redirect_uri: str | None
+    refresh_token: str | None
     cache_dir: Path
 
     @property
@@ -35,6 +49,10 @@ class StravaConfig:
     @property
     def token_ready(self) -> bool:
         return bool(self.access_token)
+
+    @property
+    def refresh_ready(self) -> bool:
+        return bool(self.client_id and self.client_secret and self.refresh_token)
 
 
 @dataclass(frozen=True)
@@ -95,6 +113,7 @@ def load_strava_config(*, cache_dir: Path | None = None) -> StravaConfig:
         client_id=get_setting("STRAVA_CLIENT_ID"),
         client_secret=get_setting("STRAVA_CLIENT_SECRET"),
         redirect_uri=get_setting("STRAVA_REDIRECT_URI"),
+        refresh_token=get_setting("STRAVA_REFRESH_TOKEN"),
         cache_dir=cache,
     )
 
@@ -103,6 +122,7 @@ class StravaClient:
     """Authenticated Strava client with cache + rate limits.
 
     Never logs response bodies or stream payloads (privacy).
+    On HTTP 401, refreshes via OAuth refresh_token (when configured) and retries once.
     """
 
     def __init__(
@@ -110,15 +130,46 @@ class StravaClient:
         config: StravaConfig,
         *,
         access_token: str | None = None,
+        refresh_token: str | None = None,
+        on_tokens_refreshed: Callable[[OAuthTokens], None] | None = None,
         session: requests.Session | None = None,
         timeout_s: float = 25,
     ) -> None:
         self.config = config
         self.access_token = access_token or config.access_token
+        self.refresh_token = refresh_token or config.refresh_token
+        self.on_tokens_refreshed = on_tokens_refreshed
         self.session = session or requests.Session()
         self.timeout_s = timeout_s
         self.cache = SegmentCache(config.cache_dir / "segments.sqlite")
         self.limiter = RateLimiter(config.cache_dir / "rate_limit.sqlite")
+
+    def _can_refresh(self) -> bool:
+        return bool(
+            self.config.client_id
+            and self.config.client_secret
+            and self.refresh_token
+        )
+
+    def _refresh_tokens(self) -> None:
+        """Exchange refresh_token for a new access_token. Raises StravaAuthError."""
+        if not self._can_refresh():
+            raise StravaAuthError(TOKEN_RECOVERY_HINT)
+        try:
+            tokens = refresh_access_token(
+                client_id=self.config.client_id,  # type: ignore[arg-type]
+                client_secret=self.config.client_secret,  # type: ignore[arg-type]
+                refresh_token=self.refresh_token,  # type: ignore[arg-type]
+                session=self.session,
+                timeout_s=self.timeout_s,
+            )
+        except Exception as exc:  # noqa: BLE001 — never include token/body details
+            raise StravaAuthError(TOKEN_RECOVERY_HINT) from exc
+        self.access_token = tokens.access_token
+        if tokens.refresh_token:
+            self.refresh_token = tokens.refresh_token
+        if self.on_tokens_refreshed is not None:
+            self.on_tokens_refreshed(tokens)
 
     def rate_status(self) -> RateLimitStatus:
         return self.limiter.status()
@@ -315,11 +366,18 @@ class StravaClient:
             elevs = [0.0] * n
         return RouteStreams(lats=lats, lons=lons, elevs_m=elevs, distances_m=dists)
 
-    def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    def _get(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        *,
+        _retried: bool = False,
+    ) -> Any:
         if not self.access_token:
-            raise StravaAuthError(
-                "No Strava access token. Set STRAVA_ACCESS_TOKEN or complete OAuth."
-            )
+            if self._can_refresh():
+                self._refresh_tokens()
+            else:
+                raise StravaAuthError(TOKEN_RECOVERY_HINT)
         try:
             self.limiter.check()
         except RateLimitExceeded as exc:
@@ -335,7 +393,10 @@ class StravaClient:
         self.limiter.record()
 
         if resp.status_code == 401:
-            raise StravaAuthError("Strava unauthorized — token missing or expired")
+            if not _retried and self._can_refresh():
+                self._refresh_tokens()
+                return self._get(path, params, _retried=True)
+            raise StravaAuthError(TOKEN_RECOVERY_HINT)
         if resp.status_code == 403:
             raise StravaAuthError(
                 "Strava forbidden (HTTP 403) — token lacks required OAuth scope "

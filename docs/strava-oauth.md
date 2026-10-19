@@ -24,6 +24,14 @@ If Strava returns HTTP 403, the token is missing the `read` scope — reconnect 
 
 Starred-segment lists were removed from the UI.
 
+## Access token expiry / refresh
+
+Strava access tokens expire. On HTTP 401 the app calls the OAuth **refresh_token** grant with secrets (or session) `client_id` / `client_secret` / `refresh_token`, then retries explore and segment loads.
+
+- A successful refresh updates **`st.session_state` only** for this browser session.
+- **Streamlit Cloud secrets are read-only at runtime** — the app cannot write the new access token back into secrets. Paste updated tokens into secrets when you want them to survive reboots / cold starts.
+- If refresh also fails (dead or revoked refresh token): open https://www.strava.com/settings/api → copy a fresh **Access Token** (and **Refresh Token** if shown) → paste under `[strava]` as `access_token` / `refresh_token` → reboot the app. Or use **Connect with Strava**.
+
 ## Strava API application
 
 In https://www.strava.com/settings/api :
@@ -42,7 +50,8 @@ Same string must be `STRAVA_REDIRECT_URI` / `[strava].redirect_uri` in secrets.
 client_id = "your_client_id"
 client_secret = "your_client_secret"
 redirect_uri = "https://bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app"
-# access_token = "optional owner fallback"
+# access_token = "optional owner fallback (expires — pair with refresh_token)"
+# refresh_token = "optional; used to refresh expired access_token"
 ```
 
 ## Privacy

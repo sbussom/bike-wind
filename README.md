@@ -36,7 +36,8 @@ Each setting is read from **env first**, then `st.secrets` of the same name (Str
 
 | Key | Purpose |
 | --- | --- |
-| `STRAVA_ACCESS_TOKEN` | Segment URL/ID + streams without OAuth UI (owner fallback) |
+| `STRAVA_ACCESS_TOKEN` | Segment URL/ID + streams without OAuth UI (owner fallback; expires) |
+| `STRAVA_REFRESH_TOKEN` | Refresh expired access token (session-only persist; secrets are read-only) |
 | `STRAVA_CLIENT_ID` | OAuth app client id (Connect with Strava) |
 | `STRAVA_CLIENT_SECRET` | OAuth app client secret |
 | `STRAVA_REDIRECT_URI` | Must match Strava callback (Cloud app root URL) |

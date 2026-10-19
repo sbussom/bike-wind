@@ -78,6 +78,7 @@ def refresh_access_token(
     session: requests.Session | None = None,
     timeout_s: float = 20,
 ) -> OAuthTokens:
+    """Refresh grant. Does not log response bodies (tokens)."""
     http = session or requests.Session()
     resp = http.post(
         TOKEN_URL,

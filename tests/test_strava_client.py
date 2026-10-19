@@ -25,6 +25,7 @@ def _config(tmp_path: Path, **kwargs) -> StravaConfig:
         client_id="cid",
         client_secret="sec",
         redirect_uri="http://localhost:8501",
+        refresh_token="refresh-tok",
         cache_dir=tmp_path,
     )
     base.update(kwargs)
@@ -115,9 +116,9 @@ def test_streams_to_route_and_cache(tmp_path: Path) -> None:
 
 
 def test_auth_error_without_token(tmp_path: Path) -> None:
-    cfg = _config(tmp_path, access_token=None)
+    cfg = _config(tmp_path, access_token=None, refresh_token=None)
     client = StravaClient(cfg)
-    with pytest.raises(StravaAuthError):
+    with pytest.raises(StravaAuthError, match="settings/api"):
         client.get_segment_meta(1, use_cache=False)
 
 
@@ -215,6 +216,74 @@ def test_explore_403_mentions_oauth_scope(tmp_path: Path) -> None:
     client = StravaClient(_config(tmp_path), session=session)
     with pytest.raises(StravaAuthError, match="read"):
         client.explore([26.0, -80.2, 26.2, -80.0])
+
+
+def test_401_refreshes_and_retries(tmp_path: Path) -> None:
+    session = MagicMock()
+    unauthorized = MagicMock()
+    unauthorized.status_code = 401
+    ok = MagicMock()
+    ok.status_code = 200
+    ok.json.return_value = {
+        "id": 42,
+        "name": "Fresh",
+        "distance": 1000.0,
+        "average_grade": 2.0,
+    }
+    refresh_resp = MagicMock()
+    refresh_resp.status_code = 200
+    refresh_resp.json.return_value = {
+        "access_token": "new-access",
+        "refresh_token": "new-refresh",
+        "expires_at": 9999999999,
+    }
+    session.get.side_effect = [unauthorized, ok]
+    session.post.return_value = refresh_resp
+
+    seen: list[str] = []
+
+    def on_refreshed(tokens):
+        seen.append(tokens.access_token)
+
+    client = StravaClient(
+        _config(tmp_path, access_token="expired"),
+        session=session,
+        on_tokens_refreshed=on_refreshed,
+    )
+    meta = client.get_segment_meta(42, use_cache=False)
+    assert meta.name == "Fresh"
+    assert client.access_token == "new-access"
+    assert client.refresh_token == "new-refresh"
+    assert seen == ["new-access"]
+    assert session.get.call_count == 2
+    assert session.post.call_count == 1
+
+
+def test_401_refresh_failure_is_actionable(tmp_path: Path) -> None:
+    session = MagicMock()
+    unauthorized = MagicMock()
+    unauthorized.status_code = 401
+    session.get.return_value = unauthorized
+    bad_refresh = MagicMock()
+    bad_refresh.status_code = 400
+    session.post.return_value = bad_refresh
+
+    client = StravaClient(_config(tmp_path, access_token="expired"), session=session)
+    with pytest.raises(StravaAuthError, match="settings/api"):
+        client.get_segment_meta(1, use_cache=False)
+
+
+def test_401_without_refresh_token_is_actionable(tmp_path: Path) -> None:
+    session = MagicMock()
+    unauthorized = MagicMock()
+    unauthorized.status_code = 401
+    session.get.return_value = unauthorized
+    client = StravaClient(
+        _config(tmp_path, access_token="expired", refresh_token=None),
+        session=session,
+    )
+    with pytest.raises(StravaAuthError, match="access_token"):
+        client.get_segment_meta(1, use_cache=False)
 
 
 def test_rate_limiter_blocks(tmp_path: Path) -> None:

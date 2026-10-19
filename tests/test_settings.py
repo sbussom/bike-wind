@@ -289,6 +289,7 @@ def test_load_strava_config_lowercase_nested_token(
         "STRAVA_CLIENT_SECRET",
         "STRAVA_REDIRECT_URI",
         "STRAVA_ACCESS_TOKEN",
+        "STRAVA_REFRESH_TOKEN",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -298,6 +299,7 @@ def test_load_strava_config_lowercase_nested_token(
                 "client_id": "x",
                 "client_secret": "y",
                 "access_token": "live-tok",
+                "refresh_token": "live-ref",
             }
         }
     )
@@ -305,6 +307,8 @@ def test_load_strava_config_lowercase_nested_token(
         cfg = load_strava_config(cache_dir=tmp_path)
     assert cfg.token_ready is True
     assert cfg.access_token == "live-tok"
+    assert cfg.refresh_token == "live-ref"
+    assert cfg.refresh_ready is True
     # No redirect_uri → OAuth Connect not ready, but token path works
     assert cfg.oauth_ready is False
 
