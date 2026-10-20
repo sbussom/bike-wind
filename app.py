@@ -43,6 +43,7 @@ except ImportError:  # pragma: no cover — stale site-packages on Cloud
 from bike_wind.past_ride import ride_activity_label
 from bike_wind.strava import (
     ActivitySummary,
+    SegmentEffortSummary,
     StravaAuthError,
     StravaClient,
     StravaError,
@@ -245,10 +246,16 @@ def _init_state() -> None:
         st.session_state.selected_activity = None
     if "activity_route" not in st.session_state:
         st.session_state.activity_route = None
+    if "activity_efforts" not in st.session_state:
+        st.session_state.activity_efforts = []
+    if "selected_effort" not in st.session_state:
+        st.session_state.selected_effort = None
     if "activity_stream_error" not in st.session_state:
         st.session_state.activity_stream_error = None
     if "_rides_token_fp" not in st.session_state:
         st.session_state._rides_token_fp = None
+    if "_efforts_activity_id" not in st.session_state:
+        st.session_state._efforts_activity_id = None
     if "_last_run" not in st.session_state:
         st.session_state._last_run = None
 
@@ -435,16 +442,20 @@ def _handle_oauth_callback(config) -> None:
 
 
 def _clear_activity_route_state() -> None:
-    if st.session_state.get("route_source") == "activity":
+    if st.session_state.get("route_source") in ("activity", "effort"):
         st.session_state.route_source = None
     st.session_state.recent_activities = []
     st.session_state.day_activities = []
     st.session_state.selected_activity = None
+    st.session_state.selected_effort = None
     st.session_state.activity_route = None
+    st.session_state.activity_efforts = []
+    st.session_state._efforts_activity_id = None
     st.session_state._rides_token_fp = None
     st.session_state.activity_stream_error = None
     st.session_state._recent_label_map = {}
     st.session_state._day_label_map = {}
+    st.session_state._effort_label_map = {}
 
 
 def _on_disconnect_strava() -> None:
@@ -482,15 +493,24 @@ def _select_strava_segment(
     }
     st.session_state.route_source = "segment"
     st.session_state.selected_activity = None
+    st.session_state.selected_effort = None
     st.session_state.activity_route = None
+    st.session_state.activity_efforts = []
+    st.session_state._efforts_activity_id = None
     st.session_state.activity_stream_error = None
 
 
 def _select_strava_activity(act: ActivitySummary) -> None:
     """Mark a Strava ride as route_source (never touch widget keys)."""
+    prev_id = getattr(st.session_state.get("selected_activity"), "activity_id", None)
     st.session_state.selected_activity = act
+    st.session_state.selected_effort = None
     st.session_state.route_source = "activity"
     st.session_state.activity_stream_error = None
+    if prev_id != act.activity_id:
+        st.session_state.activity_efforts = []
+        st.session_state._efforts_activity_id = None
+        st.session_state._effort_label_map = {}
     if act.has_power and act.average_watts is not None:
         # power_w is not a widget key; the slider uses its own default each run.
         st.session_state.power_w = int(round(act.average_watts))
@@ -555,11 +575,92 @@ def _load_ride_track(config, act: ActivitySummary) -> bool:
     _select_strava_activity(act)
     st.session_state.activity_route = route
     st.session_state.activity_stream_error = None
+    # Refresh segment efforts for this ride (dropdown after the ride pick).
+    _fetch_activity_efforts(config, act.activity_id)
+    return True
+
+
+def _fetch_activity_efforts(config, activity_id: int) -> None:
+    """Load segment efforts for the chosen ride into session (non-widget keys)."""
+    if st.session_state.get("_efforts_activity_id") == activity_id:
+        return
+    try:
+        efforts = _run_strava_call(
+            config,
+            lambda c: c.list_activity_segment_efforts(activity_id),
+        )
+        st.session_state.activity_efforts = efforts
+        st.session_state._efforts_activity_id = activity_id
+    except (StravaAuthError, StravaError) as exc:
+        st.session_state.activity_efforts = []
+        st.session_state._efforts_activity_id = activity_id
+        st.session_state.activity_stream_error = (
+            f"Segment efforts unavailable ({exc})."
+        )
+    except Exception as exc:  # noqa: BLE001
+        st.session_state.activity_efforts = []
+        st.session_state._efforts_activity_id = activity_id
+        st.session_state.activity_stream_error = f"Could not list segment efforts: {exc}"
+
+
+def _load_effort_segment(config, effort: SegmentEffortSummary) -> bool:
+    """Load segment GPS for an effort; actual speed from effort elapsed time."""
+    from bike_wind.strava.client import route_with_effort_actuals
+
+    try:
+        meta, route = _run_strava_call(
+            config,
+            lambda c: c.load_segment_route(effort.segment_id),
+        )
+        enriched = route_with_effort_actuals(route, effort)
+    except (StravaAuthError, StravaError) as exc:
+        st.session_state.activity_stream_error = (
+            f"Segment streams unavailable ({exc})."
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001
+        st.session_state.activity_stream_error = f"Could not load segment: {exc}"
+        return False
+    st.session_state.selected_effort = effort
+    st.session_state.route_source = "effort"
+    st.session_state.activity_route = enriched
+    st.session_state.strava_segment_id = effort.segment_id
+    st.session_state.strava_meta = {
+        "segment_id": meta.segment_id,
+        "name": meta.name,
+        "distance_m": meta.distance_m,
+        "average_grade": meta.average_grade,
+        "from_cache": meta.from_cache,
+    }
+    st.session_state.activity_stream_error = None
+    if effort.average_watts is not None and effort.average_watts > 0:
+        st.session_state.power_w = int(round(effort.average_watts))
     return True
 
 
 _RIDE_PLACEHOLDER = "— pick a recent ride —"
 _DAY_PLACEHOLDER = "— pick a ride from that day —"
+_EFFORT_PLACEHOLDER = "— pick a segment on this ride —"
+
+
+def _on_effort_pick() -> None:
+    """Segment-effort selectbox on_change — before widgets; sets route_source."""
+    pick = st.session_state.get("effort_ride_pick")
+    if not pick or pick == _EFFORT_PLACEHOLDER:
+        return
+    effort = (st.session_state.get("_effort_label_map") or {}).get(pick)
+    if effort is None:
+        return
+    cur = st.session_state.get("selected_effort")
+    if (
+        cur is not None
+        and cur.effort_id == effort.effort_id
+        and st.session_state.get("route_source") == "effort"
+        and st.session_state.get("activity_route") is not None
+    ):
+        return
+    _load_effort_segment(load_strava_config(), effort)
+
 
 
 def _on_recent_ride_pick() -> None:
@@ -856,16 +957,41 @@ def main() -> None:
                 on_change=_on_day_ride_pick,
             )
 
-        if (
-            st.session_state.get("route_source") == "activity"
-            and st.session_state.get("selected_activity")
-        ):
+        if st.session_state.get("selected_activity") and st.session_state.get(
+            "route_source"
+        ) in ("activity", "effort"):
             act = st.session_state.selected_activity
             n_pts = len(st.session_state.activity_route or [])
-            st.caption(
-                f"Track loaded: **{act.name}** · {ride_activity_label(act)}"
-                + (f" · {n_pts} pts" if n_pts else "")
+            if st.session_state.get("route_source") == "effort" and st.session_state.get(
+                "selected_effort"
+            ):
+                eff = st.session_state.selected_effort
+                st.caption(
+                    f"Segment on ride: **{eff.name}** · {eff.label()}"
+                    + (f" · {n_pts} pts" if n_pts else "")
+                )
+            else:
+                st.caption(
+                    f"Track loaded: **{act.name}** · {ride_activity_label(act)}"
+                    + (f" · {n_pts} pts" if n_pts else "")
+                )
+            # Segment efforts on this ride → choosing one loads that segment's GPS.
+            if st.session_state.get("_efforts_activity_id") != act.activity_id:
+                _fetch_activity_efforts(strava_cfg, act.activity_id)
+            efforts: list[SegmentEffortSummary] = list(
+                st.session_state.get("activity_efforts") or []
             )
+            if efforts:
+                effort_map = {e.label(): e for e in efforts}
+                st.session_state._effort_label_map = effort_map
+                st.selectbox(
+                    "Segment on this ride",
+                    options=[_EFFORT_PLACEHOLDER, *effort_map.keys()],
+                    key="effort_ride_pick",
+                    on_change=_on_effort_pick,
+                )
+            elif st.session_state.get("_efforts_activity_id") == act.activity_id:
+                st.caption("No segment efforts on this ride.")
 
         if st.session_state.get("activity_stream_error"):
             st.error(st.session_state.activity_stream_error)
@@ -876,7 +1002,8 @@ def main() -> None:
             "Demo route",
             value=(
                 uploaded is None
-                and st.session_state.get("route_source") not in ("segment", "activity")
+                and st.session_state.get("route_source")
+                not in ("segment", "activity", "effort")
             ),
         )
 
@@ -964,6 +1091,9 @@ def main() -> None:
     if not run and not last_run:
         return
 
+    use_effort = st.session_state.get("route_source") == "effort" and bool(
+        st.session_state.get("selected_effort")
+    )
     use_activity = st.session_state.get("route_source") == "activity" and bool(
         st.session_state.get("selected_activity")
     )
@@ -973,7 +1103,19 @@ def main() -> None:
 
     if run:
         try:
-            if use_activity and strava_ready:
+            if use_effort and strava_ready:
+                effort: SegmentEffortSummary = st.session_state.selected_effort
+                route = st.session_state.get("activity_route")
+                if route is None or len(route) < 2:
+                    if not _load_effort_segment(strava_cfg, effort):
+                        st.error(
+                            st.session_state.activity_stream_error
+                            or "Segment streams unavailable."
+                        )
+                        return
+                    route = st.session_state.activity_route
+                source_label = f"Strava segment: {effort.name}"
+            elif use_activity and strava_ready:
                 act: ActivitySummary = st.session_state.selected_activity
                 route = st.session_state.get("activity_route")
                 if route is None or len(route) < 2:

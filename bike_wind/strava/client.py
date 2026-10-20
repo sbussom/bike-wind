@@ -14,7 +14,7 @@ from bike_wind.gpx.parse import RouteStreams
 from bike_wind.settings import get_setting
 from bike_wind.strava.cache import CachedSegment, SegmentCache
 from bike_wind.strava import errors as strava_errors
-from bike_wind.strava.models import ActivitySummary
+from bike_wind.strava.models import ActivitySummary, SegmentEffortSummary
 from bike_wind.strava.oauth import OAuthTokenError, OAuthTokens, refresh_access_token
 from bike_wind.strava.rate_limit import RateLimitExceeded, RateLimiter, RateLimitStatus
 from bike_wind.strava.urls import ParsedStravaRef, parse_strava_segment_ref
@@ -457,6 +457,44 @@ class StravaClient:
             start_lon=float(start[1]) if len(start) >= 2 else None,
         )
 
+    def list_activity_segment_efforts(
+        self, activity_id: int
+    ) -> list[SegmentEffortSummary]:
+        """Segment efforts recorded on an activity (needs activity:read)."""
+        data = self._get(f"/activities/{activity_id}")
+        if not isinstance(data, dict):
+            raise StravaError("Unexpected activity detail response")
+        raw = data.get("segment_efforts") or []
+        if not isinstance(raw, list):
+            return []
+        out: list[SegmentEffortSummary] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            seg = item.get("segment") or {}
+            seg_id = seg.get("id") if isinstance(seg, dict) else None
+            if seg_id is None:
+                continue
+            name = str(
+                (seg.get("name") if isinstance(seg, dict) else None)
+                or item.get("name")
+                or seg_id
+            )
+            watts = item.get("average_watts")
+            out.append(
+                SegmentEffortSummary(
+                    effort_id=int(item["id"]),
+                    segment_id=int(seg_id),
+                    name=name,
+                    distance_m=float(item.get("distance") or seg.get("distance") or 0.0),
+                    elapsed_time_s=int(item.get("elapsed_time") or 0),
+                    moving_time_s=int(item.get("moving_time") or 0),
+                    start_date=str(item.get("start_date") or ""),
+                    average_watts=float(watts) if watts is not None else None,
+                )
+            )
+        return out
+
     def load_activity_route(
         self,
         activity_id: int,
@@ -749,6 +787,39 @@ def _parse_activity_start(start_date: str | None) -> datetime | None:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def route_with_effort_actuals(
+    route: RouteStreams,
+    effort: SegmentEffortSummary,
+) -> RouteStreams:
+    """Copy segment geometry and attach effort start time + average actual speed."""
+    from datetime import timedelta
+
+    n = len(route)
+    if n < 2:
+        return route
+    v = effort.average_speed_mps
+    start = _parse_activity_start(effort.start_date)
+    times_utc = None
+    speeds = None
+    if v is not None and v > 0:
+        speeds = [v] * n
+        if start is not None:
+            times_utc = [start]
+            for i in range(1, n):
+                dd = max(0.0, route.distances_m[i] - route.distances_m[i - 1])
+                times_utc.append(times_utc[-1] + timedelta(seconds=dd / v))
+    elif start is not None:
+        times_utc = [start] * n
+    return RouteStreams(
+        lats=list(route.lats),
+        lons=list(route.lons),
+        elevs_m=list(route.elevs_m),
+        distances_m=list(route.distances_m),
+        times_utc=times_utc,
+        actual_speeds_mps=speeds,
+    )
 
 
 def _opt_float(val: Any) -> float | None:

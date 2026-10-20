@@ -11,13 +11,14 @@ from bike_wind.strava.client import (
     StravaRateLimitError,
     load_strava_config,
 )
-from bike_wind.strava.models import ActivitySummary
+from bike_wind.strava.models import ActivitySummary, SegmentEffortSummary
 from bike_wind.strava.urls import ParsedStravaRef, parse_strava_segment_ref
 
 __all__ = [
     "ActivitySummary",
     "ExploreHit",
     "ParsedStravaRef",
+    "SegmentEffortSummary",
     "SegmentMeta",
     "StarredSegment",
     "StravaAuthError",

@@ -23,3 +23,31 @@ class ActivitySummary:
     @property
     def has_power(self) -> bool:
         return self.average_watts is not None and self.average_watts > 0
+
+
+@dataclass(frozen=True)
+class SegmentEffortSummary:
+    """One segment effort from GET /activities/{id} ``segment_efforts``."""
+
+    effort_id: int
+    segment_id: int
+    name: str
+    distance_m: float
+    elapsed_time_s: int
+    moving_time_s: int
+    start_date: str  # ISO UTC
+    average_watts: float | None = None
+
+    @property
+    def average_speed_mps(self) -> float | None:
+        """Ground speed from effort distance / elapsed (or moving) time."""
+        t = self.elapsed_time_s or self.moving_time_s
+        if t <= 0 or self.distance_m <= 0:
+            return None
+        return self.distance_m / float(t)
+
+    def label(self) -> str:
+        km = self.distance_m / 1000.0
+        t = self.elapsed_time_s or self.moving_time_s
+        mins, secs = divmod(max(0, int(t)), 60)
+        return f"{self.name} · {km:.1f} km · {mins}:{secs:02d}"
