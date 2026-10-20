@@ -48,7 +48,12 @@ from bike_wind.strava import (
     StravaError,
     load_strava_config,
 )
-from bike_wind.strava.oauth import exchange_code
+from bike_wind.strava.oauth import (
+    DEFAULT_REDIRECT_URI,
+    build_authorize_url,
+    exchange_code,
+    oauth_configured,
+)
 from bike_wind.weather import hrrr_enabled_by_env
 
 
@@ -218,12 +223,16 @@ def _init_state() -> None:
         st.session_state.strava_refresh_token = None
     if "strava_oauth_connected" not in st.session_state:
         st.session_state.strava_oauth_connected = False
+    if "strava_token_expires_at" not in st.session_state:
+        st.session_state.strava_token_expires_at = None
     if "strava_refreshed_access_token" not in st.session_state:
         st.session_state.strava_refreshed_access_token = None
     if "strava_refreshed_refresh_token" not in st.session_state:
         st.session_state.strava_refreshed_refresh_token = None
     if "strava_last_error" not in st.session_state:
         st.session_state.strava_last_error = None
+    if "strava_oauth_error" not in st.session_state:
+        st.session_state.strava_oauth_error = None
     if "use_strava_segment" not in st.session_state:
         st.session_state.use_strava_segment = False
     if "use_strava_activity" not in st.session_state:
@@ -255,6 +264,7 @@ def _clear_strava_session_tokens() -> None:
     st.session_state.strava_access_token = None
     st.session_state.strava_refresh_token = None
     st.session_state.strava_oauth_connected = False
+    st.session_state.strava_token_expires_at = None
     st.session_state.strava_refreshed_access_token = None
     st.session_state.strava_refreshed_refresh_token = None
 
@@ -309,6 +319,7 @@ def _persist_refreshed_tokens(tokens) -> None:
         st.session_state.strava_access_token = tokens.access_token
         if tokens.refresh_token:
             st.session_state.strava_refresh_token = tokens.refresh_token
+        st.session_state.strava_token_expires_at = tokens.expires_at
     else:
         st.session_state.strava_refreshed_access_token = tokens.access_token
         if tokens.refresh_token:
@@ -316,16 +327,10 @@ def _persist_refreshed_tokens(tokens) -> None:
 
 
 def _strava_client(config, *, secrets_only: bool = False) -> StravaClient:
-    """Client for segment resolve; auto-refreshes on 401 into session_state."""
+    """Client for segment/activity calls; auto-refreshes on 401 into session_state."""
 
     def on_refreshed(tokens) -> None:
         _persist_refreshed_tokens(tokens)
-
-    def on_refresh_failed() -> None:
-        # Sticky dead tokens must not outlive a failed refresh.
-        if not st.session_state.get("strava_oauth_connected"):
-            st.session_state.strava_refreshed_access_token = None
-            st.session_state.strava_refreshed_refresh_token = None
 
     if secrets_only:
         access = config.access_token
@@ -334,7 +339,6 @@ def _strava_client(config, *, secrets_only: bool = False) -> StravaClient:
         access = _effective_strava_token(config)
         refresh = _effective_strava_refresh(config)
 
-    _ = on_refresh_failed  # reserved for future hooks; clear happens in _run_strava_call
     return StravaClient(
         config,
         access_token=access,
@@ -344,7 +348,12 @@ def _strava_client(config, *, secrets_only: bool = False) -> StravaClient:
 
 
 def _run_strava_call(config, fn):
-    """Run ``fn(client)``; on refresh failure clear sticky tokens and retry with secrets."""
+    """Run ``fn(client)``; secrets path may retry after refresh failure.
+
+    Connected visitors keep their session token only — never silently fall back
+    to the owner secrets token for personal rides.
+    """
+    was_connected = bool(st.session_state.get("strava_oauth_connected"))
     client = _strava_client(config)
     try:
         return fn(client)
@@ -352,7 +361,11 @@ def _run_strava_call(config, fn):
         if getattr(exc, "kind", None) != "refresh_failed":
             raise
         _clear_strava_session_tokens()
-        # Retry once with deployer secrets only (ignore any leftover session).
+        if was_connected:
+            raise StravaAuthError(
+                "Strava session expired — reconnect.",
+                kind="refresh_failed",
+            ) from exc
         client2 = _strava_client(config, secrets_only=True)
         return fn(client2)
 
@@ -369,13 +382,31 @@ def _token_source(config) -> str:
     return "none"
 
 
+def _clear_oauth_query_params() -> None:
+    try:
+        for key in ("code", "scope", "state", "error", "error_description"):
+            if key in st.query_params:
+                del st.query_params[key]
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _handle_oauth_callback(config) -> None:
     """Exchange ?code= from Strava redirect into session_state (never secrets)."""
     params = st.query_params
+    if params.get("error"):
+        err = str(params.get("error_description") or params.get("error"))
+        st.session_state.strava_oauth_error = f"Strava rejected connect: {err}"
+        _clear_oauth_query_params()
+        return
     code = params.get("code")
     if not code or st.session_state.get("_oauth_handled_code") == code:
         return
-    if not config.oauth_ready:
+    if not oauth_configured(config.client_id, config.client_secret, config.redirect_uri):
+        st.session_state.strava_oauth_error = (
+            "Connect needs client_id, client_secret, and redirect_uri in secrets."
+        )
+        _clear_oauth_query_params()
         return
     try:
         tokens = exchange_code(
@@ -386,24 +417,26 @@ def _handle_oauth_callback(config) -> None:
         st.session_state.strava_oauth_connected = True
         st.session_state.strava_access_token = tokens.access_token
         st.session_state.strava_refresh_token = tokens.refresh_token
+        st.session_state.strava_token_expires_at = tokens.expires_at
+        st.session_state.strava_oauth_error = None
+        st.session_state.recent_activities = []
+        st.session_state.selected_activity = None
+        st.session_state.use_strava_activity = False
         st.session_state._oauth_handled_code = code
-        try:
-            del st.query_params["code"]
-            if "scope" in st.query_params:
-                del st.query_params["scope"]
-            if "state" in st.query_params:
-                del st.query_params["state"]
-        except Exception:  # noqa: BLE001
-            pass
+        _clear_oauth_query_params()
         st.success("Strava connected for this browser session.")
-    except Exception as exc:  # noqa: BLE001 — no response body in message
-        st.error(f"Strava OAuth failed: {exc}")
+    except Exception as exc:  # noqa: BLE001 — no response body / tokens in message
+        st.session_state.strava_oauth_error = f"Strava OAuth failed: {exc}"
+        _clear_oauth_query_params()
 
 
 def _on_disconnect_strava() -> None:
     _clear_strava_session_tokens()
     st.session_state.use_strava_segment = False
     st.session_state.use_strava_activity = False
+    st.session_state.recent_activities = []
+    st.session_state.selected_activity = None
+    st.session_state.strava_oauth_error = None
 
 
 def _on_reset_strava_session() -> None:
@@ -412,6 +445,9 @@ def _on_reset_strava_session() -> None:
     st.session_state.use_strava_activity = False
     st.session_state.strava_last_error = None
     st.session_state.activity_stream_error = None
+    st.session_state.strava_oauth_error = None
+    st.session_state.recent_activities = []
+    st.session_state.selected_activity = None
     st.session_state._strava_reset_flash = True
 
 
@@ -568,6 +604,40 @@ def main() -> None:
     _sync_strava_secrets_fingerprint()
     _handle_oauth_callback(strava_cfg)
     strava_ready = _strava_ready(strava_cfg)
+    oauth_ok = oauth_configured(
+        strava_cfg.client_id, strava_cfg.client_secret, strava_cfg.redirect_uri
+    )
+    connected = bool(st.session_state.get("strava_oauth_connected"))
+
+    # Compact Connect / Disconnect — not a hero.
+    conn_l, conn_r = st.columns([3, 2])
+    with conn_l:
+        if connected:
+            st.caption("Strava connected (this browser).")
+        elif oauth_ok:
+            st.caption("Optional: connect your Strava for personal rides.")
+        else:
+            st.caption("Strava connect needs client_id / secret in secrets.")
+    with conn_r:
+        if connected:
+            st.button(
+                "Disconnect",
+                on_click=_on_disconnect_strava,
+                key="disconnect_strava",
+                use_container_width=True,
+            )
+        elif oauth_ok:
+            auth_url = build_authorize_url(
+                strava_cfg.client_id,  # type: ignore[arg-type]
+                strava_cfg.redirect_uri or DEFAULT_REDIRECT_URI,
+            )
+            st.link_button(
+                "Connect with Strava",
+                auth_url,
+                use_container_width=True,
+            )
+    if st.session_state.get("strava_oauth_error"):
+        st.error(st.session_state.strava_oauth_error)
 
     default_dt = datetime.now(timezone.utc).replace(
         minute=0, second=0, microsecond=0
@@ -611,7 +681,9 @@ def main() -> None:
             st.caption(f"Selected: **{m['name']}** · {m['segment_id']}")
             st.checkbox("Use this segment", key="use_strava_segment")
 
-        st.caption("Recent Strava ride — Garmin syncs here; uses the app token.")
+        st.caption(
+            "Recent Strava ride — your account if connected, else the app token."
+        )
         if st.button(
             "Load recent rides",
             disabled=not strava_ready,
@@ -738,7 +810,12 @@ def main() -> None:
         presence = strava_secrets_presence()
         st.caption(
             f"Token: {'set' if presence.get('ACCESS_TOKEN') else 'missing'} · "
-            f"Refresh: {'set' if presence.get('REFRESH_TOKEN') else 'missing'}"
+            f"Refresh: {'set' if presence.get('REFRESH_TOKEN') else 'missing'} · "
+            f"OAuth: {'connected' if connected else 'off'}"
+        )
+        st.caption(
+            "Strava app Authorization Callback Domain: gustypower.streamlit.app "
+            f"(redirect {strava_cfg.redirect_uri or DEFAULT_REDIRECT_URI})."
         )
         if st.session_state.get("strava_last_error"):
             st.error(st.session_state.strava_last_error)

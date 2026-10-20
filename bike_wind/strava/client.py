@@ -113,13 +113,16 @@ class StravaRateLimitError(StravaError):
 
 def load_strava_config(*, cache_dir: Path | None = None) -> StravaConfig:
     """Load Strava settings from env, then Streamlit secrets (same key names)."""
+    from bike_wind.strava.oauth import DEFAULT_REDIRECT_URI
+
     cache_raw = get_setting("BIKE_WIND_CACHE")
     cache = cache_dir or Path(cache_raw or REPO_CACHE)
+    redirect = get_setting("STRAVA_REDIRECT_URI") or DEFAULT_REDIRECT_URI
     return StravaConfig(
         access_token=get_setting("STRAVA_ACCESS_TOKEN"),
         client_id=get_setting("STRAVA_CLIENT_ID"),
         client_secret=get_setting("STRAVA_CLIENT_SECRET"),
-        redirect_uri=get_setting("STRAVA_REDIRECT_URI"),
+        redirect_uri=redirect,
         refresh_token=get_setting("STRAVA_REFRESH_TOKEN"),
         cache_dir=cache,
     )

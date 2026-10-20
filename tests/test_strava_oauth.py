@@ -7,7 +7,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from bike_wind.strava.oauth import (
+    DEFAULT_REDIRECT_URI,
     OAuthTokenError,
+    READ_SCOPE,
+    build_authorize_url,
     exchange_code,
     refresh_access_token,
     safe_oauth_error_detail,
@@ -89,6 +92,14 @@ def test_safe_oauth_error_redacts_tokenish() -> None:
     assert "invalid_client" in detail
     assert "abcdefghijklmnopqrstuvwxyz012345" not in detail
     assert "[redacted]" in detail
+
+
+def test_authorize_url_includes_activity_read_scope() -> None:
+    url = build_authorize_url("12345", DEFAULT_REDIRECT_URI)
+    assert "activity%3Aread" in url or "activity:read" in url
+    assert "read" in url
+    assert "gustypower.streamlit.app" in url
+    assert READ_SCOPE == "read,activity:read"
 
 
 def test_exchange_code_success() -> None:

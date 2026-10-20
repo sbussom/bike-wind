@@ -11,7 +11,9 @@ import requests
 
 AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
 TOKEN_URL = "https://www.strava.com/oauth/token"
-READ_SCOPE = "read"
+# read = public segment GPS; activity:read = athlete recent rides / streams
+READ_SCOPE = "read,activity:read"
+DEFAULT_REDIRECT_URI = "https://gustypower.streamlit.app"
 
 # Long hex/base64-ish blobs that look like tokens — never show in UI.
 _TOKENISH = re.compile(r"[A-Za-z0-9_\-]{20,}")

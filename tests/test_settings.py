@@ -320,12 +320,13 @@ def test_load_strava_config_lowercase_nested_token(
     )
     with patch.dict("sys.modules", {"streamlit": fake_st}):
         cfg = load_strava_config(cache_dir=tmp_path)
-    assert cfg.token_ready is True
-    assert cfg.access_token == "live-tok"
-    assert cfg.refresh_token == "live-ref"
-    assert cfg.refresh_ready is True
-    # No redirect_uri → OAuth Connect not ready, but token path works
-    assert cfg.oauth_ready is False
+        assert cfg.token_ready is True
+        assert cfg.access_token == "live-tok"
+        assert cfg.refresh_token == "live-ref"
+        assert cfg.refresh_ready is True
+        # Missing secrets redirect_uri falls back to live app default
+        assert cfg.oauth_ready is True
+        assert cfg.redirect_uri == "https://gustypower.streamlit.app"
 
 
 def test_load_strava_config_nested_short_aliases(
