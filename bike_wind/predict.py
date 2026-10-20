@@ -46,6 +46,10 @@ class PredictionResult:
     mean_wind_along_mps: float = 0.0
     mean_headwind_mps: float = 0.0
     mean_tailwind_mps: float = 0.0
+    actual_speeds_mps: list[float] | None = None
+    weather_when: datetime | None = None
+    mean_grade_pct: float = 0.0
+    used_ride_start_time: bool = False
 
     @property
     def distances_km(self) -> list[float]:
@@ -58,6 +62,18 @@ class PredictionResult:
     @property
     def speeds_no_wind_kmh(self) -> list[float]:
         return [v * 3.6 for v in self.speeds_no_wind_mps]
+
+    @property
+    def actual_speeds_kmh(self) -> list[float] | None:
+        if not self.actual_speeds_mps:
+            return None
+        return [v * 3.6 for v in self.actual_speeds_mps]
+
+    @property
+    def has_actual_speeds(self) -> bool:
+        return bool(self.actual_speeds_mps) and len(self.actual_speeds_mps) == len(
+            self.distances_m
+        )
 
     @property
     def eta_with_wind_s(self) -> float:
@@ -78,10 +94,22 @@ def predict_speeds(
     target_time_s: float | None = None,
     prefer_hrrr: bool = False,
     use_archive: bool = False,
+    prefer_ride_start_time: bool = True,
 ) -> PredictionResult:
-    """Solve speeds with and without wind; attach time band, KOM power, bins."""
+    """Solve speeds with and without wind; attach time band, KOM power, bins.
+
+    Grade (rise/run from elevation) is always passed into the ground-speed
+    solver. When the route has a recorded start time and
+    ``prefer_ride_start_time`` is True, weather is fetched for that instant
+    instead of ``when``.
+    """
     grades = route.grades()
     bearings = route.bearings_deg()
+    used_ride_start = False
+    weather_when = when
+    if prefer_ride_start_time and route.start_time is not None:
+        weather_when = route.start_time
+        used_ride_start = True
 
     speeds_calm = solve_speeds(params, grades)
 
@@ -100,7 +128,7 @@ def predict_speeds(
             route.lats,
             route.lons,
             bearings,
-            when,
+            weather_when,
             prefer_hrrr=prefer_hrrr and not use_archive,
             use_archive=use_archive,
             max_samples=max_weather_samples,
@@ -124,6 +152,7 @@ def predict_speeds(
             rho=rho_mean,
             tuck_on_descent=params.tuck_on_descent,
         )
+        # Grade from elevation is required input to the speed solver.
         speeds_wind = solve_speeds(params_used, grades, winds)
         weather_ok = True
     except WeatherFetchError as exc:
@@ -138,7 +167,7 @@ def predict_speeds(
         grades,
         winds,
         params_used,
-        when,
+        weather_when,
     )
 
     target: TargetPowerResult | None = None
@@ -163,6 +192,7 @@ def predict_speeds(
     )
 
     mean_along, mean_head, mean_tail = head_tail_summary(wind_along)
+    actual = list(route.actual_speeds_mps) if route.has_actual_speeds else None
 
     return PredictionResult(
         distances_m=list(route.distances_m),
@@ -185,6 +215,10 @@ def predict_speeds(
         mean_wind_along_mps=mean_along,
         mean_headwind_mps=mean_head,
         mean_tailwind_mps=mean_tail,
+        actual_speeds_mps=actual,
+        weather_when=weather_when,
+        mean_grade_pct=route.mean_grade_pct(),
+        used_ride_start_time=used_ride_start,
     )
 
 
@@ -195,9 +229,19 @@ def downsample_route(route: RouteStreams, max_points: int = 400) -> RouteStreams
         return route
     step = (n - 1) / (max_points - 1)
     idxs = sorted({int(round(i * step)) for i in range(max_points)})
+    times = (
+        [route.times_utc[i] for i in idxs] if route.times_utc is not None else None
+    )
+    speeds = (
+        [route.actual_speeds_mps[i] for i in idxs]
+        if route.actual_speeds_mps is not None
+        else None
+    )
     return RouteStreams(
         lats=[route.lats[i] for i in idxs],
         lons=[route.lons[i] for i in idxs],
         elevs_m=[route.elevs_m[i] for i in idxs],
         distances_m=[route.distances_m[i] for i in idxs],
+        times_utc=times,
+        actual_speeds_mps=speeds,
     )

@@ -1,4 +1,4 @@
-"""Open-Meteo forecast client (hourly wind U/V, temperature, pressure)."""
+"""Open-Meteo forecast client (15-min when available, else hourly wind)."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from bike_wind.weather.wind_profile import wind_uv_at_rider_height
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 DEFAULT_TIMEOUT_S = 20
 SOURCE_KEY = "open-meteo"
+SOURCE_KEY_15MIN = "open-meteo-15min"
 
 
 @dataclass(frozen=True)
@@ -132,7 +133,7 @@ def fetch_one(
     if cached is not None:
         return point_from_raw(cached, lat, lon, bearing_deg, z_m=z_m, z0_m=z0_m)
 
-    params = {
+    params: dict[str, object] = {
         "latitude": lat,
         "longitude": lon,
         "hourly": ",".join(
@@ -146,6 +147,9 @@ def fetch_one(
         "timezone": "UTC",
         "forecast_days": 16,
     }
+    past_days = past_days_for(when_utc)
+    if past_days > 0:
+        params["past_days"] = past_days
     resp = http.get(OPEN_METEO_URL, params=params, timeout=timeout_s)
     resp.raise_for_status()
     payload = resp.json()
@@ -223,15 +227,170 @@ def as_utc(when: datetime) -> datetime:
 
 def nearest_hour_index(times: Sequence[str], when_utc: datetime) -> int:
     target = when_utc.replace(minute=0, second=0, microsecond=0)
+    return nearest_time_index(times, target)
+
+
+def nearest_time_index(times: Sequence[str], when_utc: datetime) -> int:
     best_i = 0
     best_dt: float | None = None
     for i, t in enumerate(times):
-        parsed = datetime.fromisoformat(t).replace(tzinfo=timezone.utc)
-        delta = abs((parsed - target).total_seconds())
+        parsed = datetime.fromisoformat(t.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        delta = abs((parsed - when_utc).total_seconds())
         if best_dt is None or delta < best_dt:
             best_dt = delta
             best_i = i
     return best_i
+
+
+def past_days_for(when_utc: datetime, *, now: datetime | None = None) -> int:
+    """How many past_days the forecast API needs to cover ``when_utc``."""
+    now = now or datetime.now(timezone.utc)
+    if when_utc >= now:
+        return 0
+    delta_h = (now - when_utc).total_seconds() / 3600.0
+    return max(1, min(92, int(math.ceil(delta_h / 24.0)) + 1))
+
+
+def fetch_forecast_15min_along_route(
+    lats: Sequence[float],
+    lons: Sequence[float],
+    bearings_deg: Sequence[float],
+    when: datetime,
+    *,
+    max_samples: int = 12,
+    z0_m: float = Z0_OPEN_GRASS,
+    z_m: float = RIDER_HEIGHT_M,
+    session: requests.Session | None = None,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    cache: ForecastCache | None = None,
+) -> list[ForecastPoint]:
+    """Open-Meteo 15-minutely wind along a route (updates cache under finer source)."""
+    if not lats or len(lats) != len(lons) or len(lats) != len(bearings_deg):
+        raise ValueError("lats, lons, and bearings_deg must be equal non-empty lengths")
+
+    when_utc = as_utc(when)
+    sample_idxs = sample_indices(len(lats), max_samples)
+    http = session or requests.Session()
+    cache = cache or ForecastCache()
+    forecast_ts = ForecastCache.quarter_key(when_utc)
+    past_days = past_days_for(when_utc)
+
+    samples: dict[int, ForecastPoint] = {}
+    try:
+        for idx in sample_idxs:
+            samples[idx] = fetch_one_15min(
+                http,
+                lat=lats[idx],
+                lon=lons[idx],
+                bearing_deg=bearings_deg[idx],
+                when_utc=when_utc,
+                forecast_ts=forecast_ts,
+                past_days=past_days,
+                z0_m=z0_m,
+                z_m=z_m,
+                timeout_s=timeout_s,
+                cache=cache,
+            )
+    except (requests.RequestException, KeyError, ValueError, IndexError) as exc:
+        raise WeatherFetchError(f"Open-Meteo 15-min forecast failed: {exc}") from exc
+
+    out: list[ForecastPoint] = []
+    for i in range(len(lats)):
+        nearest = min(sample_idxs, key=lambda s: abs(s - i))
+        base = samples[nearest]
+        along, cross = along_cross(base.u_rider_mps, base.v_rider_mps, bearings_deg[i])
+        out.append(
+            ForecastPoint(
+                lat=lats[i],
+                lon=lons[i],
+                temperature_c=base.temperature_c,
+                pressure_hpa=base.pressure_hpa,
+                u10_mps=base.u10_mps,
+                v10_mps=base.v10_mps,
+                u_rider_mps=base.u_rider_mps,
+                v_rider_mps=base.v_rider_mps,
+                rho=base.rho,
+                along_track_mps=along,
+                cross_track_mps=cross,
+            )
+        )
+    return out
+
+
+def fetch_one_15min(
+    http: requests.Session,
+    *,
+    lat: float,
+    lon: float,
+    bearing_deg: float,
+    when_utc: datetime,
+    forecast_ts: str,
+    past_days: int,
+    z0_m: float,
+    z_m: float,
+    timeout_s: float,
+    cache: ForecastCache,
+) -> ForecastPoint:
+    cached = cache.get(lat, lon, forecast_ts, SOURCE_KEY_15MIN)
+    if cached is not None:
+        return point_from_raw(cached, lat, lon, bearing_deg, z_m=z_m, z0_m=z0_m)
+
+    params: dict[str, object] = {
+        "latitude": lat,
+        "longitude": lon,
+        "minutely_15": ",".join(
+            [
+                "temperature_2m",
+                "wind_speed_10m",
+                "wind_direction_10m",
+            ]
+        ),
+        "hourly": "surface_pressure",
+        "wind_speed_unit": "ms",
+        "timezone": "UTC",
+        "forecast_days": 16,
+    }
+    if past_days > 0:
+        params["past_days"] = past_days
+    resp = http.get(OPEN_METEO_URL, params=params, timeout=timeout_s)
+    resp.raise_for_status()
+    payload = resp.json()
+    m15 = payload.get("minutely_15") or {}
+    times: list[str] = list(m15.get("time") or [])
+    if len(times) < 2:
+        raise ValueError("minutely_15 series empty")
+    ti = nearest_time_index(times, when_utc)
+    speed = float(m15["wind_speed_10m"][ti])
+    direction = float(m15["wind_direction_10m"][ti])
+    # Meteorological FROM → U east / V north
+    rad = math.radians(direction)
+    u10 = -speed * math.sin(rad)
+    v10 = -speed * math.cos(rad)
+    temp = float(m15["temperature_2m"][ti])
+
+    pressure_hpa = 1013.25
+    hourly = payload.get("hourly") or {}
+    h_times = list(hourly.get("time") or [])
+    h_press = hourly.get("surface_pressure")
+    if h_times and h_press:
+        hi = nearest_hour_index(h_times, when_utc)
+        pressure_hpa = float(h_press[hi])
+
+    raw = CachedForecastRaw(
+        lat=lat,
+        lon=lon,
+        forecast_ts=forecast_ts,
+        source=SOURCE_KEY_15MIN,
+        temperature_c=temp,
+        pressure_hpa=pressure_hpa,
+        u10_mps=u10,
+        v10_mps=v10,
+    )
+    # Always write the finer slot — upgrades a prior hourly-only cache for this place/time.
+    cache.put(raw)
+    return point_from_raw(raw, lat, lon, bearing_deg, z_m=z_m, z0_m=z0_m)
 
 
 # Back-compat aliases used by hrrr module

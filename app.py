@@ -464,6 +464,45 @@ def _on_reset_bike_mass() -> None:
     _apply_bike_kg(preset_kg, manual=False)
 
 
+def _chart_colors(dark: bool) -> tuple[str, str, str, str]:
+    """Background, foreground, accent, spine for grey-canvas charts."""
+    if dark:
+        return "#0c1210", "#e7efea", "#3ecf8e", "#3a4a42"
+    return "#f7faf8", "#14201b", "#1a6b52", "#c5d0ca"
+
+
+def _style_speed_axes(ax, *, dark: bool, fig) -> tuple[str, str, str]:
+    bg, fg, accent, spine = _chart_colors(dark)
+    fig.patch.set_facecolor(bg)
+    ax.set_facecolor(bg)
+    ax.set_xlabel("Distance (km)", color=fg)
+    ax.set_ylabel("km/h", color=fg)
+    ax.tick_params(colors=fg)
+    for sp in ax.spines.values():
+        sp.set_color(spine)
+    ax.grid(True, alpha=0.22, color=fg)
+    return bg, fg, accent
+
+
+def _validation_help_text(result, *, position_label: str, cda: float) -> str:
+    """Plain-language parameter blurb for the validation chart popover."""
+    p = result.params
+    when = result.weather_when
+    when_s = when.strftime("%Y-%m-%d %H:%M UTC") if when else "—"
+    wx = result.weather_source if result.weather_ok else "unavailable (calm)"
+    grade = result.mean_grade_pct
+    lines = [
+        f"Power: {p.power_w:.0f} W sustained.",
+        f"Mass: {p.total_mass_kg:.1f} kg rider+bike.",
+        f"Position: {position_label} · Cd·A={cda:.3f}.",
+        f"Rolling resistance Crr={p.crr:.4f}.",
+        f"Air density ρ={result.rho_mean:.3f} kg/m³ from temp/pressure.",
+        f"Wind: {wx} at {when_s}.",
+        f"Grade: elevation rise/run in the solver (mean |grade| ≈ {grade:.1f}%).",
+        "Lines: teal = model with wind+grade; grey = actual ride speed when timed data exists.",
+    ]
+    return "\n".join(lines)
+
 
 def main() -> None:
     _init_state()
@@ -539,7 +578,11 @@ def main() -> None:
 
     with st.container(border=True):
         st.html('<p class="bw-section-label">Rider</p>')
-        when = st.datetime_input("When (UTC)", value=default_dt)
+        when = st.datetime_input(
+            "When (UTC)",
+            value=default_dt,
+            help="Forecast time for a future attempt. Timed GPX rides use their start time for wind instead.",
+        )
         labels = position_labels()
         current_label = POSITION_PRESETS[st.session_state.position_key].label
         chosen = st.selectbox(
@@ -721,25 +764,78 @@ def main() -> None:
             st.caption(f"Route map unavailable: {exc}")
 
         fig, ax = plt.subplots(figsize=(9, 3.4))
-        bg = "#0c1210" if dark else "#f7faf8"
-        fg = "#e7efea" if dark else "#14201b"
-        accent = "#3ecf8e" if dark else "#1a6b52"
-        fig.patch.set_facecolor(bg)
-        ax.set_facecolor(bg)
-        ax.plot(result.distances_km, result.speeds_no_wind_kmh, label="Calm", color="#8fa398", linestyle="--")
-        ax.plot(result.distances_km, result.speeds_with_wind_kmh, label="With wind", color=accent, linewidth=2)
-        ax.set_xlabel("Distance (km)", color=fg)
-        ax.set_ylabel("km/h", color=fg)
-        ax.tick_params(colors=fg)
-        for spine in ax.spines.values():
-            spine.set_color("#3a4a42" if dark else "#c5d0ca")
+        bg, fg, accent = _style_speed_axes(ax, dark=dark, fig=fig)
+        ax.plot(
+            result.distances_km,
+            result.speeds_no_wind_kmh,
+            label="Calm",
+            color="#8fa398",
+            linestyle="--",
+        )
+        ax.plot(
+            result.distances_km,
+            result.speeds_with_wind_kmh,
+            label="With wind",
+            color=accent,
+            linewidth=2,
+        )
         legend = ax.legend(facecolor=bg, edgecolor="#3a4a42" if dark else "#c5d0ca")
         for text in legend.get_texts():
             text.set_color(fg)
-        ax.grid(True, alpha=0.22, color=fg)
         fig.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
+
+        # --- Validation: actual vs model (same grey canvas) ---
+        head_l, head_r = st.columns([5, 1])
+        with head_l:
+            st.caption(
+                f"Validation · grade in model (mean |grade| ≈ {result.mean_grade_pct:.1f}%)"
+            )
+        with head_r:
+            with st.popover("Info"):
+                st.text(
+                    _validation_help_text(
+                        result,
+                        position_label=POSITION_PRESETS[position_key_out].label,
+                        cda=cda_out,
+                    )
+                )
+
+        fig2, ax2 = plt.subplots(figsize=(9, 3.4))
+        bg2, fg2, accent2 = _style_speed_axes(ax2, dark=dark, fig=fig2)
+        ax2.plot(
+            result.distances_km,
+            result.speeds_with_wind_kmh,
+            label="Model",
+            color=accent2,
+            linewidth=2,
+        )
+        if result.has_actual_speeds and result.actual_speeds_kmh is not None:
+            ax2.plot(
+                result.distances_km,
+                result.actual_speeds_kmh,
+                label="Actual",
+                color="#8fa398",
+                linewidth=1.8,
+                alpha=0.95,
+            )
+        else:
+            st.caption(
+                "Actual speed needs a GPX (or Strava stream) with timestamps or speed — "
+                "showing model only."
+            )
+        if result.used_ride_start_time and result.weather_when is not None:
+            st.caption(
+                f"Wind from ride start {result.weather_when.strftime('%Y-%m-%d %H:%M UTC')} "
+                f"({result.weather_source})."
+            )
+        leg2 = ax2.legend(facecolor=bg2, edgecolor="#3a4a42" if dark else "#c5d0ca")
+        for text in leg2.get_texts():
+            text.set_color(fg2)
+        fig2.tight_layout()
+        st.pyplot(fig2)
+        plt.close(fig2)
 
 
 if __name__ == "__main__":

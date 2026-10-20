@@ -80,6 +80,18 @@ class ForecastCache:
             when = when.astimezone(timezone.utc)
         return when.replace(minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:00")
 
+    @staticmethod
+    def quarter_key(when: datetime) -> str:
+        """Round down to :00 / :15 / :30 / :45 UTC for 15-min cache slots."""
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        else:
+            when = when.astimezone(timezone.utc)
+        minute = (when.minute // 15) * 15
+        return when.replace(minute=minute, second=0, microsecond=0).strftime(
+            "%Y-%m-%dT%H:%M"
+        )
+
     def get(
         self,
         lat: float,

@@ -1,10 +1,11 @@
-"""Parse GPX into lat/lon/elevation/distance streams."""
+"""Parse GPX into lat/lon/elevation/distance streams (optional times/speeds)."""
 
 from __future__ import annotations
 
 import math
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, TextIO, Union
 
@@ -35,17 +36,30 @@ class RouteStreams:
     lons: list[float]
     elevs_m: list[float]
     distances_m: list[float]
+    times_utc: list[datetime] | None = None
+    actual_speeds_mps: list[float] | None = None
 
     def __len__(self) -> int:
         return len(self.lats)
 
     def midpoint(self) -> tuple[float, float]:
-        """Return (lat, lon) at the middle track point (for map pin centering)."""
+        """Return (lat, lon) at the middle track point."""
         n = len(self.lats)
         if n == 0:
             raise ValueError("empty route")
         i = (n - 1) // 2
         return float(self.lats[i]), float(self.lons[i])
+
+    @property
+    def start_time(self) -> datetime | None:
+        """First point timestamp when the ride recorded times."""
+        if not self.times_utc:
+            return None
+        return self.times_utc[0]
+
+    @property
+    def has_actual_speeds(self) -> bool:
+        return bool(self.actual_speeds_mps) and len(self.actual_speeds_mps) == len(self)
 
     @property
     def points(self) -> list[RoutePoint]:
@@ -72,6 +86,20 @@ class RouteStreams:
         out.append(out[-1])
         return out
 
+    def mean_grade_pct(self) -> float:
+        """Distance-weighted mean |grade| as percent (for UI notes)."""
+        n = len(self)
+        if n < 2:
+            return 0.0
+        grades = self.grades()
+        num = 0.0
+        den = 0.0
+        for i in range(n - 1):
+            dd = max(0.0, self.distances_m[i + 1] - self.distances_m[i])
+            num += abs(grades[i]) * 100.0 * dd
+            den += dd
+        return num / den if den > 0 else 0.0
+
     def bearings_deg(self) -> list[float]:
         """Forward bearing (degrees from north, clockwise) at each point."""
         n = len(self)
@@ -87,7 +115,11 @@ class RouteStreams:
 
 
 def parse_gpx(source: Source) -> RouteStreams:
-    """Parse a GPX track or route into distance-aligned streams."""
+    """Parse a GPX track or route into distance-aligned streams.
+
+    When track points include ``<time>``, also returns UTC times and derived
+    actual ground speeds (m/s). Points without times yield geometry only.
+    """
     root = _load_root(source)
     coords = _extract_points(root)
     if len(coords) < 2:
@@ -97,17 +129,53 @@ def parse_gpx(source: Source) -> RouteStreams:
     lons: list[float] = []
     elevs: list[float] = []
     dists: list[float] = []
+    times: list[datetime] = []
     cumulative = 0.0
+    timed = 0
 
-    for i, (lat, lon, elev) in enumerate(coords):
+    for i, (lat, lon, elev, t) in enumerate(coords):
         if i > 0:
             cumulative += _haversine_m(lats[-1], lons[-1], lat, lon)
         lats.append(lat)
         lons.append(lon)
         elevs.append(elev)
         dists.append(cumulative)
+        if t is not None:
+            times.append(t)
+            timed += 1
+        else:
+            times.append(datetime.fromtimestamp(0, tz=timezone.utc))  # placeholder
 
-    return RouteStreams(lats=lats, lons=lons, elevs_m=elevs, distances_m=dists)
+    times_utc: list[datetime] | None = times if timed == len(coords) else None
+    speeds = speeds_from_times(dists, times_utc) if times_utc is not None else None
+    return RouteStreams(
+        lats=lats,
+        lons=lons,
+        elevs_m=elevs,
+        distances_m=dists,
+        times_utc=times_utc,
+        actual_speeds_mps=speeds,
+    )
+
+
+def speeds_from_times(
+    distances_m: list[float],
+    times_utc: list[datetime],
+) -> list[float]:
+    """Ground speed (m/s) per point from consecutive distance/time deltas."""
+    n = len(distances_m)
+    if n != len(times_utc) or n < 2:
+        return [0.0] * n
+    out: list[float] = []
+    for i in range(n - 1):
+        dd = distances_m[i + 1] - distances_m[i]
+        dt = (times_utc[i + 1] - times_utc[i]).total_seconds()
+        if dt > 0.05 and dd >= 0.0:
+            out.append(dd / dt)
+        else:
+            out.append(out[-1] if out else 0.0)
+    out.append(out[-1] if out else 0.0)
+    return out
 
 
 def _load_root(source: Source) -> ET.Element:
@@ -126,14 +194,12 @@ def _load_root(source: Source) -> ET.Element:
     return ET.fromstring(data)
 
 
-def _extract_points(root: ET.Element) -> list[tuple[float, float, float]]:
-    # Try namespaced and un-namespaced trkpt / rtept
+def _extract_points(root: ET.Element) -> list[tuple[float, float, float, datetime | None]]:
     for ns in GPX_NS_CANDIDATES:
         points = _find_points(root, ns)
         if points:
             return points
-    # Fallback: any element named trkpt or rtept
-    points: list[tuple[float, float, float]] = []
+    points: list[tuple[float, float, float, datetime | None]] = []
     for el in root.iter():
         tag = el.tag.split("}")[-1] if "}" in el.tag else el.tag
         if tag in ("trkpt", "rtept"):
@@ -141,7 +207,9 @@ def _extract_points(root: ET.Element) -> list[tuple[float, float, float]]:
     return points
 
 
-def _find_points(root: ET.Element, ns: dict[str, str]) -> list[tuple[float, float, float]]:
+def _find_points(
+    root: ET.Element, ns: dict[str, str]
+) -> list[tuple[float, float, float, datetime | None]]:
     if ns:
         trk = root.findall(".//gpx:trkpt", ns)
         if trk:
@@ -157,16 +225,29 @@ def _find_points(root: ET.Element, ns: dict[str, str]) -> list[tuple[float, floa
     return [_point_from_el(el) for el in rte]
 
 
-def _point_from_el(el: ET.Element) -> tuple[float, float, float]:
+def _point_from_el(el: ET.Element) -> tuple[float, float, float, datetime | None]:
     lat = float(el.attrib["lat"])
     lon = float(el.attrib["lon"])
     elev = 0.0
+    t: datetime | None = None
     for child in el:
         tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
         if tag == "ele" and child.text:
             elev = float(child.text)
-            break
-    return lat, lon, elev
+        elif tag == "time" and child.text:
+            t = _parse_gpx_time(child.text.strip())
+    return lat, lon, elev, t
+
+
+def _parse_gpx_time(raw: str) -> datetime | None:
+    text = raw.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

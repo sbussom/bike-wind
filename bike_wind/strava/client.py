@@ -442,28 +442,43 @@ class StravaClient:
     def _fetch_activity_streams_as_route(self, activity_id: int) -> RouteStreams:
         data = self._get(
             f"/activities/{activity_id}/streams",
-            params={"keys": "latlng,distance,altitude", "key_by_type": "true"},
+            params={
+                "keys": "latlng,distance,altitude,time,velocity_smooth",
+                "key_by_type": "true",
+            },
         )
         return self._streams_payload_to_route(data)
 
     def _fetch_streams_as_route(self, segment_id: int) -> RouteStreams:
+        # Segment streams are usually geometry-only; ask for time/velocity when present.
         data = self._get(
             f"/segments/{segment_id}/streams",
-            params={"keys": "latlng,distance,altitude", "key_by_type": "true"},
+            params={
+                "keys": "latlng,distance,altitude,time,velocity_smooth",
+                "key_by_type": "true",
+            },
         )
         return self._streams_payload_to_route(data)
 
     def _streams_payload_to_route(self, data: Any) -> RouteStreams:
+        from datetime import datetime, timezone
+
+        from bike_wind.gpx.parse import speeds_from_times
+
         # key_by_type → {"latlng": {"data": [[lat,lng],...]}, ...}
         if isinstance(data, dict) and "latlng" in data:
             latlng = data["latlng"]["data"]
             distances = data.get("distance", {}).get("data") or []
             altitudes = data.get("altitude", {}).get("data") or []
+            times_raw = data.get("time", {}).get("data") or []
+            vel_raw = data.get("velocity_smooth", {}).get("data") or []
         elif isinstance(data, list):
             by_type = {item.get("type"): item.get("data") for item in data}
             latlng = by_type.get("latlng") or []
             distances = by_type.get("distance") or []
             altitudes = by_type.get("altitude") or []
+            times_raw = by_type.get("time") or []
+            vel_raw = by_type.get("velocity_smooth") or []
         else:
             raise StravaError("Unexpected streams response shape")
 
@@ -481,7 +496,27 @@ class StravaClient:
             elevs = [float(a) for a in altitudes]
         else:
             elevs = [0.0] * n
-        return RouteStreams(lats=lats, lons=lons, elevs_m=elevs, distances_m=dists)
+
+        # Absolute wall-clock times are not on bare segment streams; relative
+        # time/velocity only feed actual_speeds for the validation chart.
+        actual_speeds = None
+        if len(vel_raw) == n:
+            actual_speeds = [max(0.0, float(v)) for v in vel_raw]
+        elif len(times_raw) == n:
+            from datetime import timedelta
+
+            base = datetime(1970, 1, 1, tzinfo=timezone.utc)
+            rel_times = [base + timedelta(seconds=float(t)) for t in times_raw]
+            actual_speeds = speeds_from_times(dists, rel_times)
+
+        return RouteStreams(
+            lats=lats,
+            lons=lons,
+            elevs_m=elevs,
+            distances_m=dists,
+            times_utc=None,
+            actual_speeds_mps=actual_speeds,
+        )
 
     def _format_diag(self, **extra: Any) -> str:
         blob = {
