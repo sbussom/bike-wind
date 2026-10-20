@@ -233,10 +233,10 @@ def _init_state() -> None:
         st.session_state.strava_last_error = None
     if "strava_oauth_error" not in st.session_state:
         st.session_state.strava_oauth_error = None
-    if "use_strava_segment" not in st.session_state:
-        st.session_state.use_strava_segment = False
-    if "use_strava_activity" not in st.session_state:
-        st.session_state.use_strava_activity = False
+    # Canonical route choice — NOT a widget key (never write use_strava_* after
+    # a checkbox with that key exists; StreamlitWidgetAlreadyInstantiatedError).
+    if "route_source" not in st.session_state:
+        st.session_state.route_source = None  # "segment" | "activity" | None
     if "recent_activities" not in st.session_state:
         st.session_state.recent_activities = []
     if "day_activities" not in st.session_state:
@@ -435,25 +435,28 @@ def _handle_oauth_callback(config) -> None:
 
 
 def _clear_activity_route_state() -> None:
-    st.session_state.use_strava_activity = False
+    if st.session_state.get("route_source") == "activity":
+        st.session_state.route_source = None
     st.session_state.recent_activities = []
     st.session_state.day_activities = []
     st.session_state.selected_activity = None
     st.session_state.activity_route = None
     st.session_state._rides_token_fp = None
     st.session_state.activity_stream_error = None
+    st.session_state._recent_label_map = {}
+    st.session_state._day_label_map = {}
 
 
 def _on_disconnect_strava() -> None:
     _clear_strava_session_tokens()
-    st.session_state.use_strava_segment = False
+    st.session_state.route_source = None
     _clear_activity_route_state()
     st.session_state.strava_oauth_error = None
 
 
 def _on_reset_strava_session() -> None:
     _clear_strava_session_tokens()
-    st.session_state.use_strava_segment = False
+    st.session_state.route_source = None
     st.session_state.strava_last_error = None
     st.session_state.strava_oauth_error = None
     _clear_activity_route_state()
@@ -468,7 +471,7 @@ def _select_strava_segment(
     average_grade: float = 0.0,
     from_cache: bool = False,
 ) -> None:
-    """Set active Strava segment and auto-enable 'use instead of GPX'."""
+    """Set active Strava segment as route_source (non-widget key only)."""
     st.session_state.strava_segment_id = segment_id
     st.session_state.strava_meta = {
         "segment_id": segment_id,
@@ -477,20 +480,19 @@ def _select_strava_segment(
         "average_grade": average_grade,
         "from_cache": from_cache,
     }
-    st.session_state.use_strava_segment = True
-    st.session_state.use_strava_activity = False
+    st.session_state.route_source = "segment"
     st.session_state.selected_activity = None
     st.session_state.activity_route = None
     st.session_state.activity_stream_error = None
 
 
 def _select_strava_activity(act: ActivitySummary) -> None:
-    """Mark a Strava ride as the route source (clears segment selection)."""
+    """Mark a Strava ride as route_source (never touch widget keys)."""
     st.session_state.selected_activity = act
-    st.session_state.use_strava_activity = True
-    st.session_state.use_strava_segment = False
+    st.session_state.route_source = "activity"
     st.session_state.activity_stream_error = None
     if act.has_power and act.average_watts is not None:
+        # power_w is not a widget key; the slider uses its own default each run.
         st.session_state.power_w = int(round(act.average_watts))
 
 
@@ -528,7 +530,11 @@ def _ensure_recent_rides(config, *, limit: int = 10) -> None:
 
 
 def _load_ride_track(config, act: ActivitySummary) -> bool:
-    """Pull GPS/elev/time/speed streams and set as the active route. Returns ok."""
+    """Pull GPS/elev/time/speed streams and set as the active route. Returns ok.
+
+    Safe from ``on_change`` callbacks (runs before widgets). Must not assign
+    any key that is also a widget ``key=`` later in the script.
+    """
     try:
         route = _run_strava_call(
             config,
@@ -550,6 +556,38 @@ def _load_ride_track(config, act: ActivitySummary) -> bool:
     st.session_state.activity_route = route
     st.session_state.activity_stream_error = None
     return True
+
+
+_RIDE_PLACEHOLDER = "— pick a recent ride —"
+_DAY_PLACEHOLDER = "— pick a ride from that day —"
+
+
+def _on_recent_ride_pick() -> None:
+    """Selectbox on_change — runs before widgets; safe to set route_source."""
+    pick = st.session_state.get("recent_ride_pick")
+    if not pick or pick == _RIDE_PLACEHOLDER:
+        return
+    act = (st.session_state.get("_recent_label_map") or {}).get(pick)
+    if act is None:
+        return
+    loaded_id = getattr(st.session_state.get("selected_activity"), "activity_id", None)
+    if loaded_id == act.activity_id and st.session_state.get("activity_route") is not None:
+        return
+    _load_ride_track(load_strava_config(), act)
+
+
+def _on_day_ride_pick() -> None:
+    """Day-list selectbox on_change — same callback-order rules as recent rides."""
+    pick = st.session_state.get("day_ride_pick")
+    if not pick or pick == _DAY_PLACEHOLDER:
+        return
+    act = (st.session_state.get("_day_label_map") or {}).get(pick)
+    if act is None:
+        return
+    loaded_id = getattr(st.session_state.get("selected_activity"), "activity_id", None)
+    if loaded_id == act.activity_id and st.session_state.get("activity_route") is not None:
+        return
+    _load_ride_track(load_strava_config(), act)
 
 
 def _apply_rider_kg(kg: float, *, reset_height: bool = False) -> None:
@@ -744,10 +782,13 @@ def main() -> None:
             except Exception as exc:  # noqa: BLE001
                 st.error(f"Could not load segment: {exc}")
 
-        if st.session_state.strava_meta and st.session_state.strava_segment_id:
+        if (
+            st.session_state.get("route_source") == "segment"
+            and st.session_state.strava_meta
+            and st.session_state.strava_segment_id
+        ):
             m = st.session_state.strava_meta
-            st.caption(f"Selected: **{m['name']}** · {m['segment_id']}")
-            st.checkbox("Use this segment", key="use_strava_segment")
+            st.caption(f"Using segment: **{m['name']}** · {m['segment_id']}")
 
         st.caption(
             "Recent ride — your Strava if connected, else the app token. "
@@ -761,19 +802,15 @@ def main() -> None:
         )
         if activities:
             label_map = {ride_activity_label(a): a for a in activities}
-            labels = ["— pick a recent ride —", *label_map.keys()]
-            pick = st.selectbox("Recent rides", options=labels, key="recent_ride_pick")
-            if pick != "— pick a recent ride —":
-                chosen_act = label_map[pick]
-                loaded_id = getattr(
-                    st.session_state.get("selected_activity"), "activity_id", None
-                )
-                if (
-                    loaded_id != chosen_act.activity_id
-                    or st.session_state.get("activity_route") is None
-                ):
-                    with st.spinner("Loading ride track…"):
-                        _load_ride_track(strava_cfg, chosen_act)
+            # Maps must exist before on_change fires on the next run.
+            st.session_state._recent_label_map = label_map
+            labels = [_RIDE_PLACEHOLDER, *label_map.keys()]
+            st.selectbox(
+                "Recent rides",
+                options=labels,
+                key="recent_ride_pick",
+                on_change=_on_recent_ride_pick,
+            )
 
         ride_day = st.date_input(
             "Rides on date (UTC)",
@@ -810,24 +847,18 @@ def main() -> None:
         )
         if day_activities:
             day_map = {ride_activity_label(a): a for a in day_activities}
-            day_labels = ["— pick a ride from that day —", *day_map.keys()]
-            day_pick = st.selectbox(
-                "Rides that day", options=day_labels, key="day_ride_pick"
+            st.session_state._day_label_map = day_map
+            day_labels = [_DAY_PLACEHOLDER, *day_map.keys()]
+            st.selectbox(
+                "Rides that day",
+                options=day_labels,
+                key="day_ride_pick",
+                on_change=_on_day_ride_pick,
             )
-            if day_pick != "— pick a ride from that day —":
-                day_act = day_map[day_pick]
-                loaded_id = getattr(
-                    st.session_state.get("selected_activity"), "activity_id", None
-                )
-                if (
-                    loaded_id != day_act.activity_id
-                    or st.session_state.get("activity_route") is None
-                ):
-                    with st.spinner("Loading ride track…"):
-                        _load_ride_track(strava_cfg, day_act)
 
-        if st.session_state.get("use_strava_activity") and st.session_state.get(
-            "selected_activity"
+        if (
+            st.session_state.get("route_source") == "activity"
+            and st.session_state.get("selected_activity")
         ):
             act = st.session_state.selected_activity
             n_pts = len(st.session_state.activity_route or [])
@@ -835,7 +866,6 @@ def main() -> None:
                 f"Track loaded: **{act.name}** · {ride_activity_label(act)}"
                 + (f" · {n_pts} pts" if n_pts else "")
             )
-            st.checkbox("Use this ride as route", key="use_strava_activity")
 
         if st.session_state.get("activity_stream_error"):
             st.error(st.session_state.activity_stream_error)
@@ -846,8 +876,7 @@ def main() -> None:
             "Demo route",
             value=(
                 uploaded is None
-                and not st.session_state.get("use_strava_segment")
-                and not st.session_state.get("use_strava_activity")
+                and st.session_state.get("route_source") not in ("segment", "activity")
             ),
         )
 
@@ -935,10 +964,10 @@ def main() -> None:
     if not run and not last_run:
         return
 
-    use_activity = bool(st.session_state.get("use_strava_activity")) and bool(
+    use_activity = st.session_state.get("route_source") == "activity" and bool(
         st.session_state.get("selected_activity")
     )
-    use_strava = bool(st.session_state.get("use_strava_segment")) and bool(
+    use_strava = st.session_state.get("route_source") == "segment" and bool(
         st.session_state.get("strava_segment_id")
     )
 
