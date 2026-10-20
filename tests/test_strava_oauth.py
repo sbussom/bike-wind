@@ -22,6 +22,7 @@ def test_refresh_access_token_success() -> None:
         "access_token": "a2",
         "refresh_token": "r2",
         "expires_at": 123,
+        "scope": "read",
     }
     session.post.return_value = resp
     tokens = refresh_access_token(
@@ -33,11 +34,27 @@ def test_refresh_access_token_success() -> None:
     assert tokens.access_token == "a2"
     assert tokens.refresh_token == "r2"
     assert tokens.expires_at == 123
+    assert tokens.scope == "read"
     posted = session.post.call_args.kwargs["data"]
     assert posted["grant_type"] == "refresh_token"
     assert posted["refresh_token"] == "r1"
     assert posted["client_id"] == 12345  # coerced to int
     assert session.post.call_args.args[0] == "https://www.strava.com/oauth/token"
+
+
+def test_refresh_rejects_missing_access_token() -> None:
+    session = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"refresh_token": "r2"}
+    session.post.return_value = resp
+    with pytest.raises(OAuthTokenError, match="missing access_token"):
+        refresh_access_token(
+            client_id="cid",
+            client_secret="sec",
+            refresh_token="r1",
+            session=session,
+        )
 
 
 def test_refresh_access_token_surfaces_strava_error() -> None:

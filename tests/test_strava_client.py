@@ -241,33 +241,93 @@ def test_401_refreshes_and_retries(tmp_path: Path) -> None:
         "distance": 1000.0,
         "average_grade": 2.0,
     }
+    # refresh uses a fresh requests.Session — patch at oauth layer via client path
     refresh_resp = MagicMock()
     refresh_resp.status_code = 200
     refresh_resp.json.return_value = {
-        "access_token": "new-access",
+        "access_token": "new-access-token-value",
         "refresh_token": "new-refresh",
         "expires_at": 9999999999,
+        "scope": "read",
     }
     session.get.side_effect = [unauthorized, ok]
-    session.post.return_value = refresh_resp
 
     seen: list[str] = []
 
     def on_refreshed(tokens):
         seen.append(tokens.access_token)
 
-    client = StravaClient(
-        _config(tmp_path, access_token="expired"),
-        session=session,
-        on_tokens_refreshed=on_refreshed,
-    )
-    meta = client.get_segment_meta(42, use_cache=False)
+    with pytest.MonkeyPatch.context() as mp:
+        from bike_wind.strava import client as client_mod
+
+        def fake_refresh(**kwargs):
+            from bike_wind.strava.oauth import OAuthTokens
+
+            return OAuthTokens(
+                access_token="new-access-token-value",
+                refresh_token="new-refresh",
+                expires_at=9999999999,
+                athlete_id=None,
+                scope="read",
+            )
+
+        mp.setattr(client_mod, "refresh_access_token", fake_refresh)
+        client = StravaClient(
+            _config(tmp_path, access_token="expired"),
+            session=session,
+            on_tokens_refreshed=on_refreshed,
+        )
+        meta = client.get_segment_meta(42, use_cache=False)
+
     assert meta.name == "Fresh"
-    assert client.access_token == "new-access"
+    assert client.access_token == "new-access-token-value"
     assert client.refresh_token == "new-refresh"
-    assert seen == ["new-access"]
+    assert seen == ["new-access-token-value"]
     assert session.get.call_count == 2
-    assert session.post.call_count == 1
+    # Second GET must use the refreshed bearer, not the expired secrets token.
+    second_headers = session.get.call_args_list[1].kwargs["headers"]
+    assert second_headers["Authorization"] == "Bearer new-access-token-value"
+
+
+def test_explore_401_after_refresh_with_valid_athlete_is_tier(tmp_path: Path) -> None:
+    """Explore can 401 even when the refreshed token is otherwise valid."""
+    session = MagicMock()
+    unauthorized = MagicMock()
+    unauthorized.status_code = 401
+    unauthorized.json.return_value = {"message": "Authorization Error"}
+    explore_still_401 = MagicMock()
+    explore_still_401.status_code = 401
+    explore_still_401.json.return_value = {
+        "message": "Authorization Error",
+        "errors": [{"resource": "Application", "code": "unauthorized"}],
+    }
+    athlete_ok = MagicMock()
+    athlete_ok.status_code = 200
+    athlete_ok.json.return_value = {"id": 1}
+    session.get.side_effect = [unauthorized, explore_still_401, athlete_ok]
+
+    from bike_wind.strava import client as client_mod
+    from bike_wind.strava.oauth import OAuthTokens
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            client_mod,
+            "refresh_access_token",
+            lambda **kwargs: OAuthTokens(
+                access_token="fresh-access-token-xxxxx",
+                refresh_token="r2",
+                expires_at=9999999999,
+                athlete_id=None,
+                scope="read",
+            ),
+        )
+        client = StravaClient(_config(tmp_path, access_token="expired"), session=session)
+        with pytest.raises(StravaAuthError, match="explore blocked") as ei:
+            client.explore([26.0, -80.2, 26.2, -80.0])
+    assert ei.value.kind == "forbidden_explore_tier"
+    assert session.get.call_args_list[1].kwargs["headers"]["Authorization"].startswith(
+        "Bearer fresh-access"
+    )
 
 
 def test_401_refresh_failure_surfaces_strava_detail(tmp_path: Path) -> None:

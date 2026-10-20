@@ -9,44 +9,35 @@ MISSING_SECRETS = (
     "then reboot. Or click Connect with Strava."
 )
 
-EXPIRED_ACCESS = (
-    "[expired access] Strava returned HTTP 401 (access token missing/expired). "
-    "Attempting refresh…"
-)
-
 REFRESH_FAILED = (
     "[refresh failed] Could not refresh the Strava access token. "
     "Common causes: dead/revoked refresh_token, or client_id/client_secret mismatch "
-    "after rotating the secret. Fix: click **Reset Strava session** (clears sticky "
-    "browser tokens), then https://www.strava.com/settings/api → copy a fresh "
-    "Access Token + Refresh Token → paste into Streamlit `[strava]` as "
-    "`access_token` / `refresh_token` → reboot. "
-    "Secrets are read-only at runtime."
+    "after rotating the secret. Click **Reset Strava session**, then verify "
+    "`client_id` / `client_secret` / `refresh_token` in `[strava]` secrets match "
+    "https://www.strava.com/settings/api ."
 )
 
 REFRESH_FAILED_DETAIL = (
     "[refresh failed] Strava said: {detail}. "
-    "Typical: `invalid` / `unauthorized` refresh_token (revoked when a newer token "
-    "was issued) or wrong client_secret after rotation. "
-    "Click **Reset Strava session**, paste matching Access+Refresh from "
-    "https://www.strava.com/settings/api into `[strava]` secrets, reboot."
+    "Typical: invalid refresh_token (revoked when a newer token was issued) or "
+    "wrong client_secret after rotation. Click **Reset Strava session** and confirm "
+    "secrets match the API settings page."
 )
 
 FORBIDDEN_SCOPE = (
     "[Strava 403 scope] Token lacks required OAuth scope `read` for {path}. "
-    "Strava “Get Access Token” / Connect with Strava must include scope `read` "
-    "(public segments). activity:read is not required for explore or public segment "
-    "lookup. Re-authorize with Connect Strava (scope=read) or mint a new token "
-    "with `read` checked."
+    "Diagnostics: {diag}. Strava “Get Access Token” must include scope `read`. "
+    "`activity:read` is not required for public segment lookup."
 )
 
 FORBIDDEN_EXPLORE_TIER = (
-    "[Strava 403 explore] GET /segments/explore is restricted to apps on Strava’s "
-    "Extended Access Tier (changelog: Sept 1, 2026). Scope `read` alone is not enough. "
+    "[Strava explore blocked] GET /segments/explore is restricted to apps on "
+    "Strava’s Extended Access Tier (changelog Sept 1, 2026). Your token may be "
+    "valid (refresh OK) but this API app is not approved for explore. "
     "Go to https://www.strava.com/settings/api → API Settings Dashboard → request "
-    "Expanded / Extended Access (self-service for single-player apps when offered). "
-    "Until approved, use segment ID/URL or GPX — nearby explore will keep failing. "
-    "This is not a Streamlit secret flag."
+    "Extended / Expanded Access. This is not a Streamlit secret. "
+    "Until then: paste a segment ID/URL, upload GPX, or open Strava’s public map "
+    "near your pin (link shown below). Diagnostics: {diag}"
 )
 
 RATE_LIMIT = (
@@ -61,7 +52,20 @@ ZERO_SEGMENTS = (
 )
 
 UNAUTHORIZED_AFTER_REFRESH = (
-    "[expired access] Still unauthorized after a successful-looking refresh. "
-    "Paste fresh tokens from https://www.strava.com/settings/api into `[strava]` "
-    "secrets and reboot."
+    "[auth after refresh] Refresh returned a new access_token (expires_at={expires_at}, "
+    "scope={scope}), bearer was applied to the retry, but {path} still returned "
+    "HTTP {status}. Strava said: {detail}. "
+    "Diagnostics: {diag}. Click **Reset Strava session** if a sticky browser token "
+    "might be involved; do not keep re-pasting the same secrets unless Strava says "
+    "the refresh_token is invalid."
+)
+
+EXPLORE_UNAUTHORIZED_TOKEN_OK = (
+    "[Strava explore blocked] Refresh succeeded and GET /athlete works with the new "
+    "token (scope={scope}), but {path} still returned HTTP {status}. "
+    "That usually means this API app lacks Extended Access for explore "
+    "(required since Sept 1, 2026) — not that your secrets are wrong. "
+    "Request Extended Access at https://www.strava.com/settings/api . "
+    "Meanwhile use segment ID/URL, GPX, or the public Strava map link below. "
+    "Strava said: {detail}. Diagnostics: {diag}"
 )

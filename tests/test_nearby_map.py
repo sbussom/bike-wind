@@ -4,8 +4,19 @@ from __future__ import annotations
 
 import pytest
 
-from bike_wind.nearby_map import bounds_around, build_nearby_segments_map
+from bike_wind.nearby_map import (
+    bounds_around,
+    build_nearby_segments_map,
+    strava_public_map_url,
+)
 from bike_wind.strava.client import ExploreHit
+
+
+def test_strava_public_map_url() -> None:
+    url = strava_public_map_url(26.7, -80.05, zoom=11)
+    assert url.startswith("https://www.strava.com/maps#11/")
+    assert "26.70000" in url
+    assert "-80.05000" in url
 
 
 def test_bounds_around_is_symmetric() -> None:

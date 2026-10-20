@@ -23,6 +23,7 @@ class OAuthTokens:
     refresh_token: str | None
     expires_at: int | None
     athlete_id: int | None
+    scope: str | None = None
 
 
 class OAuthTokenError(RuntimeError):
@@ -96,6 +97,34 @@ def safe_oauth_error_detail(resp: requests.Response) -> str:
     return f"HTTP {resp.status_code}: " + "; ".join(parts)
 
 
+def _parse_token_payload(data: dict[str, Any], *, fallback_refresh: str | None = None) -> OAuthTokens:
+    raw = data.get("access_token")
+    if raw is None or not str(raw).strip():
+        raise OAuthTokenError(
+            "Strava token response missing access_token",
+            detail="missing access_token in JSON",
+        )
+    refresh = data.get("refresh_token", fallback_refresh)
+    scope = data.get("scope")
+    if isinstance(scope, list):
+        scope = " ".join(str(s) for s in scope)
+    elif scope is not None:
+        scope = str(scope)
+    athlete = data.get("athlete") or {}
+    expires_at = data.get("expires_at")
+    try:
+        expires_at_i = int(expires_at) if expires_at is not None else None
+    except (TypeError, ValueError):
+        expires_at_i = None
+    return OAuthTokens(
+        access_token=str(raw).strip(),
+        refresh_token=str(refresh).strip() if refresh else None,
+        expires_at=expires_at_i,
+        athlete_id=athlete.get("id") if isinstance(athlete, dict) else None,
+        scope=scope,
+    )
+
+
 def exchange_code(
     *,
     client_id: str,
@@ -123,14 +152,7 @@ def exchange_code(
             status=resp.status_code,
             detail=detail,
         )
-    data: dict[str, Any] = resp.json()
-    athlete = data.get("athlete") or {}
-    return OAuthTokens(
-        access_token=str(data["access_token"]),
-        refresh_token=data.get("refresh_token"),
-        expires_at=data.get("expires_at"),
-        athlete_id=athlete.get("id"),
-    )
+    return _parse_token_payload(resp.json())
 
 
 def refresh_access_token(
@@ -160,10 +182,4 @@ def refresh_access_token(
             status=resp.status_code,
             detail=detail,
         )
-    data: dict[str, Any] = resp.json()
-    return OAuthTokens(
-        access_token=str(data["access_token"]),
-        refresh_token=data.get("refresh_token", refresh_token),
-        expires_at=data.get("expires_at"),
-        athlete_id=None,
-    )
+    return _parse_token_payload(resp.json(), fallback_refresh=refresh_token)

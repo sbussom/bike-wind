@@ -29,6 +29,11 @@ def bounds_around(
     ]
 
 
+def strava_public_map_url(lat: float, lon: float, *, zoom: int = 12) -> str:
+    """Public Strava map centered on a pin (fallback when API explore is blocked)."""
+    return f"https://www.strava.com/maps#{zoom}/{lat:.5f}/{lon:.5f}"
+
+
 def build_nearby_segments_map(
     center_lat: float,
     center_lon: float,

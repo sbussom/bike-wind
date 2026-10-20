@@ -30,6 +30,7 @@ from bike_wind.nearby_map import (
     bounds_around,
     build_nearby_segments_map,
     geolocation_redirect_html,
+    strava_public_map_url,
 )
 from bike_wind.physics import RiderBikeParams
 from bike_wind.predict import downsample_route, predict_speeds
@@ -731,14 +732,41 @@ def main() -> None:
 
             if st.session_state.get("strava_last_error"):
                 st.error(st.session_state.strava_last_error)
-                st.caption(
-                    "Still stuck? Click **Reset Strava session** (right of "
-                    "Find nearby segments), then try again."
-                )
+                err = str(st.session_state.strava_last_error)
+                if "explore blocked" in err.lower() or "Extended Access" in err:
+                    st.warning(
+                        "Nearby API explore is unavailable for this Strava API app "
+                        "until Extended Access is approved. Segment ID/URL and GPX "
+                        "still work. Open Strava’s public map near your pin:"
+                    )
+                    st.link_button(
+                        "Open Strava map at pin",
+                        strava_public_map_url(map_lat, map_lon),
+                        use_container_width=True,
+                    )
+                else:
+                    st.caption(
+                        "Still stuck? Click **Reset Strava session** (right of "
+                        "Find nearby segments), then try again."
+                    )
             elif not strava_ready:
                 st.caption(
                     "Connect Strava or set `[strava]` `access_token` (+ `refresh_token`) "
                     "to plot nearby segments."
+                )
+
+            # Always offer the public-map fallback for visitors (API explore may be gated).
+            with st.expander("Can't load nearby via API?", expanded=False):
+                st.markdown(
+                    "Since Sept 2026, Strava’s `GET /segments/explore` needs **Extended "
+                    "Access** on the API app (request at "
+                    "[strava.com/settings/api](https://www.strava.com/settings/api)). "
+                    "Until then, use a segment ID/URL on the right, upload GPX, or:"
+                )
+                st.link_button(
+                    "Open Strava map at this pin",
+                    strava_public_map_url(map_lat, map_lon),
+                    use_container_width=True,
                 )
 
             try:

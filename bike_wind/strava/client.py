@@ -90,8 +90,15 @@ class StravaError(RuntimeError):
 class StravaAuthError(StravaError):
     """Auth/permission failure with a stable ``kind`` for UI / screenshots."""
 
-    def __init__(self, message: str, *, kind: str = "auth") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: str = "auth",
+        diag: dict[str, Any] | None = None,
+    ) -> None:
         self.kind = kind
+        self.diag = diag or {}
         super().__init__(message)
 
 
@@ -134,13 +141,20 @@ class StravaClient:
         timeout_s: float = 25,
     ) -> None:
         self.config = config
-        self.access_token = access_token or config.access_token
-        self.refresh_token = refresh_token or config.refresh_token
+        raw_access = access_token if access_token is not None else config.access_token
+        raw_refresh = refresh_token if refresh_token is not None else config.refresh_token
+        self.access_token = str(raw_access).strip() if raw_access else None
+        self.refresh_token = str(raw_refresh).strip() if raw_refresh else None
         self.on_tokens_refreshed = on_tokens_refreshed
+        # Dedicated HTTP session; never stash Authorization on session.headers —
+        # each request sets Bearer from self.access_token explicitly.
         self.session = session or requests.Session()
         self.timeout_s = timeout_s
         self.cache = SegmentCache(config.cache_dir / "segments.sqlite")
         self.limiter = RateLimiter(config.cache_dir / "rate_limit.sqlite")
+        self.token_scope: str | None = None
+        self.token_expires_at: int | None = None
+        self.last_diag: dict[str, Any] = {}
 
     def _can_refresh(self) -> bool:
         return bool(
@@ -149,6 +163,11 @@ class StravaClient:
             and self.refresh_token
         )
 
+    def _auth_headers(self) -> dict[str, str]:
+        if not self.access_token:
+            raise StravaAuthError(strava_errors.MISSING_SECRETS, kind="missing_secrets")
+        return {"Authorization": f"Bearer {self.access_token}"}
+
     def _refresh_tokens(self) -> None:
         """Exchange refresh_token for a new access_token. Raises StravaAuthError."""
         if not (self.config.client_id and self.config.client_secret):
@@ -156,11 +175,13 @@ class StravaClient:
         if not self.refresh_token:
             raise StravaAuthError(strava_errors.REFRESH_FAILED, kind="refresh_failed")
         try:
+            # Use a clean Session for the token POST so no leftover API headers apply.
+            token_http = requests.Session()
             tokens = refresh_access_token(
                 client_id=str(self.config.client_id),
                 client_secret=str(self.config.client_secret),
                 refresh_token=str(self.refresh_token),
-                session=self.session,
+                session=token_http,
                 timeout_s=self.timeout_s,
             )
         except OAuthTokenError as exc:
@@ -171,11 +192,50 @@ class StravaClient:
             ) from exc
         except Exception as exc:  # noqa: BLE001 — never include token/body details
             raise StravaAuthError(strava_errors.REFRESH_FAILED, kind="refresh_failed") from exc
+
+        import time as _time
+
+        if tokens.expires_at is not None and tokens.expires_at < int(_time.time()) - 60:
+            raise StravaAuthError(
+                strava_errors.REFRESH_FAILED_DETAIL.format(
+                    detail=(
+                        f"refresh returned already-expired access_token "
+                        f"(expires_at={tokens.expires_at})"
+                    )
+                ),
+                kind="refresh_failed",
+            )
+
+        # Critical: replace bearer immediately — do not fall back to secrets token.
         self.access_token = tokens.access_token
         if tokens.refresh_token:
             self.refresh_token = tokens.refresh_token
+        self.token_scope = tokens.scope
+        self.token_expires_at = tokens.expires_at
+        self.last_diag = {
+            "refresh": "ok",
+            "scope": tokens.scope,
+            "expires_at": tokens.expires_at,
+            "access_token_len": len(tokens.access_token),
+            "access_token_prefix": tokens.access_token[:4] + "…",
+        }
         if self.on_tokens_refreshed is not None:
             self.on_tokens_refreshed(tokens)
+
+    def _probe_athlete(self) -> tuple[bool, int, str]:
+        """Return (ok, status, safe_detail) for GET /athlete with current bearer."""
+        try:
+            resp = self.session.get(
+                f"{API_BASE}/athlete",
+                headers=self._auth_headers(),
+                timeout=self.timeout_s,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return False, 0, f"probe error: {exc.__class__.__name__}"
+        from bike_wind.strava.oauth import safe_oauth_error_detail
+
+        detail = safe_oauth_error_detail(resp) if resp.status_code >= 400 else "ok"
+        return resp.status_code == 200, resp.status_code, detail
 
     def rate_status(self) -> RateLimitStatus:
         return self.limiter.status()
@@ -372,6 +432,108 @@ class StravaClient:
             elevs = [0.0] * n
         return RouteStreams(lats=lats, lons=lons, elevs_m=elevs, distances_m=dists)
 
+    def _format_diag(self, **extra: Any) -> str:
+        blob = {
+            "scope": self.token_scope,
+            "expires_at": self.token_expires_at,
+            "bearer_len": len(self.access_token or ""),
+            **self.last_diag,
+            **extra,
+        }
+        # Compact, secret-free key=value list for UI / screenshots
+        parts = [f"{k}={v}" for k, v in blob.items() if v is not None and v != ""]
+        return ", ".join(parts) if parts else "(none)"
+
+    def _raise_after_failed_auth(
+        self,
+        path: str,
+        resp: requests.Response,
+        *,
+        after_refresh: bool,
+    ) -> None:
+        from bike_wind.strava.oauth import safe_oauth_error_detail
+
+        detail = safe_oauth_error_detail(resp)
+        is_explore = path.rstrip("/").endswith("/segments/explore")
+        diag_base = {
+            "endpoint": path,
+            "http_status": resp.status_code,
+            "after_refresh": after_refresh,
+            "strava_detail": detail,
+        }
+
+        if after_refresh and is_explore:
+            athlete_ok, athlete_status, athlete_detail = self._probe_athlete()
+            diag_base.update(
+                {
+                    "athlete_probe_ok": athlete_ok,
+                    "athlete_probe_status": athlete_status,
+                    "athlete_probe_detail": athlete_detail,
+                }
+            )
+            diag = self._format_diag(**diag_base)
+            if athlete_ok:
+                raise StravaAuthError(
+                    strava_errors.EXPLORE_UNAUTHORIZED_TOKEN_OK.format(
+                        scope=self.token_scope or "(unknown)",
+                        path=path,
+                        status=resp.status_code,
+                        detail=detail,
+                        diag=diag,
+                    ),
+                    kind="forbidden_explore_tier",
+                    diag=diag_base,
+                )
+            raise StravaAuthError(
+                strava_errors.UNAUTHORIZED_AFTER_REFRESH.format(
+                    expires_at=self.token_expires_at,
+                    scope=self.token_scope or "(unknown)",
+                    path=path,
+                    status=resp.status_code,
+                    detail=detail,
+                    diag=diag,
+                ),
+                kind="expired_access",
+                diag=diag_base,
+            )
+
+        if after_refresh:
+            diag = self._format_diag(**diag_base)
+            raise StravaAuthError(
+                strava_errors.UNAUTHORIZED_AFTER_REFRESH.format(
+                    expires_at=self.token_expires_at,
+                    scope=self.token_scope or "(unknown)",
+                    path=path,
+                    status=resp.status_code,
+                    detail=detail,
+                    diag=diag,
+                ),
+                kind="expired_access",
+                diag=diag_base,
+            )
+
+        if is_explore and resp.status_code == 403:
+            diag = self._format_diag(**diag_base)
+            raise StravaAuthError(
+                strava_errors.FORBIDDEN_EXPLORE_TIER.format(diag=diag),
+                kind="forbidden_explore_tier",
+                diag=diag_base,
+            )
+
+        if resp.status_code == 403:
+            diag = self._format_diag(**diag_base)
+            raise StravaAuthError(
+                strava_errors.FORBIDDEN_SCOPE.format(path=path, diag=diag),
+                kind="forbidden_scope",
+                diag=diag_base,
+            )
+
+        raise StravaAuthError(
+            strava_errors.REFRESH_FAILED_DETAIL.format(detail=detail),
+            kind="expired_access",
+            diag=diag_base,
+        )
+
     def _get(
         self,
         path: str,
@@ -392,36 +554,30 @@ class StravaClient:
             raise StravaRateLimitError(exc.status) from exc
 
         url = f"{API_BASE}{path}"
+        # Always build Authorization from the current self.access_token (post-refresh).
+        headers = self._auth_headers()
         resp = self.session.get(
             url,
-            headers={"Authorization": f"Bearer {self.access_token}"},
+            headers=headers,
             params=params,
             timeout=self.timeout_s,
         )
         self.limiter.record()
+        self.last_diag = {
+            **self.last_diag,
+            "last_path": path,
+            "last_status": resp.status_code,
+            "bearer_len": len(self.access_token or ""),
+        }
 
         if resp.status_code == 401:
             if not _retried and self._can_refresh():
                 self._refresh_tokens()
+                # Retry must use the refreshed bearer (self.access_token just updated).
                 return self._get(path, params, _retried=True)
-            if _retried:
-                raise StravaAuthError(
-                    strava_errors.UNAUTHORIZED_AFTER_REFRESH,
-                    kind="expired_access",
-                )
-            if self._can_refresh():
-                raise StravaAuthError(strava_errors.REFRESH_FAILED, kind="refresh_failed")
-            raise StravaAuthError(strava_errors.REFRESH_FAILED, kind="expired_access")
+            self._raise_after_failed_auth(path, resp, after_refresh=_retried)
         if resp.status_code == 403:
-            if path.rstrip("/").endswith("/segments/explore"):
-                raise StravaAuthError(
-                    strava_errors.FORBIDDEN_EXPLORE_TIER,
-                    kind="forbidden_explore_tier",
-                )
-            raise StravaAuthError(
-                strava_errors.FORBIDDEN_SCOPE.format(path=path),
-                kind="forbidden_scope",
-            )
+            self._raise_after_failed_auth(path, resp, after_refresh=_retried)
         if resp.status_code == 429:
             status = self.limiter.status()
             raise StravaRateLimitError(

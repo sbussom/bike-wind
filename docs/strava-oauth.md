@@ -37,7 +37,8 @@ Strava access tokens expire. On HTTP 401 the app POSTs to `https://www.strava.co
 ## Scopes & Explore tier
 
 - OAuth / “Get Access Token” needs scope **`read`** (public segments). `activity:read` is not required for explore or public segment ID lookup.
-- Since **Sept 1, 2026**, `GET /segments/explore` also requires the app’s **Extended Access Tier** in the Strava API Settings Dashboard (not a Streamlit secret). Without it you get HTTP 403 on nearby explore; segment ID/URL and GPX still work.
+- Since **Sept 1, 2026**, `GET /segments/explore` requires the app’s **Extended Access Tier** in the Strava API Settings Dashboard (not a Streamlit secret). Strava may return **401 or 403** on explore even when refresh + `GET /athlete` succeed — the app diagnoses that case and shows an Extended Access message plus a public Strava map link at the pin.
+- Segment ID/URL and GPX keep working without Extended Access.
 
 ## Strava API application
 
