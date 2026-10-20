@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -435,19 +436,35 @@ class StravaClient:
             )
         return out
 
-    def load_activity_route(self, activity_id: int) -> RouteStreams:
-        """Activity latlng/distance/altitude streams as a RouteStreams."""
-        return self._fetch_activity_streams_as_route(activity_id)
+    def load_activity_route(
+        self,
+        activity_id: int,
+        *,
+        start_date: str | None = None,
+    ) -> RouteStreams:
+        """Activity streams as RouteStreams (GPS, elev, time/speed, optional watts).
 
-    def _fetch_activity_streams_as_route(self, activity_id: int) -> RouteStreams:
+        When ``start_date`` (ISO UTC from the activity) is provided, relative
+        ``time`` samples become absolute timestamps for weather lookup.
+        """
+        return self._fetch_activity_streams_as_route(
+            activity_id, start_date=start_date
+        )
+
+    def _fetch_activity_streams_as_route(
+        self,
+        activity_id: int,
+        *,
+        start_date: str | None = None,
+    ) -> RouteStreams:
         data = self._get(
             f"/activities/{activity_id}/streams",
             params={
-                "keys": "latlng,distance,altitude,time,velocity_smooth",
+                "keys": "latlng,distance,altitude,time,velocity_smooth,watts",
                 "key_by_type": "true",
             },
         )
-        return self._streams_payload_to_route(data)
+        return self._streams_payload_to_route(data, start_date=start_date)
 
     def _fetch_streams_as_route(self, segment_id: int) -> RouteStreams:
         # Segment streams are usually geometry-only; ask for time/velocity when present.
@@ -460,8 +477,13 @@ class StravaClient:
         )
         return self._streams_payload_to_route(data)
 
-    def _streams_payload_to_route(self, data: Any) -> RouteStreams:
-        from datetime import datetime, timezone
+    def _streams_payload_to_route(
+        self,
+        data: Any,
+        *,
+        start_date: str | None = None,
+    ) -> RouteStreams:
+        from datetime import datetime, timedelta, timezone
 
         from bike_wind.gpx.parse import speeds_from_times
 
@@ -472,6 +494,8 @@ class StravaClient:
             altitudes = data.get("altitude", {}).get("data") or []
             times_raw = data.get("time", {}).get("data") or []
             vel_raw = data.get("velocity_smooth", {}).get("data") or []
+            # watts requested for activities; unused in RouteStreams (avg on summary).
+            _ = data.get("watts", {}).get("data") or []
         elif isinstance(data, list):
             by_type = {item.get("type"): item.get("data") for item in data}
             latlng = by_type.get("latlng") or []
@@ -479,6 +503,7 @@ class StravaClient:
             altitudes = by_type.get("altitude") or []
             times_raw = by_type.get("time") or []
             vel_raw = by_type.get("velocity_smooth") or []
+            _ = by_type.get("watts") or []
         else:
             raise StravaError("Unexpected streams response shape")
 
@@ -497,24 +522,30 @@ class StravaClient:
         else:
             elevs = [0.0] * n
 
-        # Absolute wall-clock times are not on bare segment streams; relative
-        # time/velocity only feed actual_speeds for the validation chart.
+        times_utc = None
         actual_speeds = None
         if len(vel_raw) == n:
             actual_speeds = [max(0.0, float(v)) for v in vel_raw]
-        elif len(times_raw) == n:
-            from datetime import timedelta
 
-            base = datetime(1970, 1, 1, tzinfo=timezone.utc)
-            rel_times = [base + timedelta(seconds=float(t)) for t in times_raw]
-            actual_speeds = speeds_from_times(dists, rel_times)
+        if len(times_raw) == n:
+            start_utc = _parse_activity_start(start_date)
+            if start_utc is not None:
+                times_utc = [
+                    start_utc + timedelta(seconds=float(t)) for t in times_raw
+                ]
+                if actual_speeds is None:
+                    actual_speeds = speeds_from_times(dists, times_utc)
+            elif actual_speeds is None:
+                base = datetime(1970, 1, 1, tzinfo=timezone.utc)
+                rel_times = [base + timedelta(seconds=float(t)) for t in times_raw]
+                actual_speeds = speeds_from_times(dists, rel_times)
 
         return RouteStreams(
             lats=lats,
             lons=lons,
             elevs_m=elevs,
             distances_m=dists,
-            times_utc=None,
+            times_utc=times_utc,
             actual_speeds_mps=actual_speeds,
         )
 
@@ -681,6 +712,22 @@ class StravaClient:
             # Do not include response body (may contain athlete data)
             raise StravaError(f"Strava API error HTTP {resp.status_code} for {path}")
         return resp.json()
+
+
+def _parse_activity_start(start_date: str | None) -> datetime | None:
+    """Parse Strava activity ``start_date`` ISO string to UTC datetime."""
+    from datetime import timezone
+
+    if not start_date:
+        return None
+    text = str(start_date).strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _opt_float(val: Any) -> float | None:

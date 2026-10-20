@@ -40,13 +40,31 @@ except ImportError:  # pragma: no cover — stale site-packages on Cloud
         }
 
 
+from bike_wind.past_ride import ride_activity_label
 from bike_wind.strava import (
+    ActivitySummary,
     StravaAuthError,
     StravaClient,
+    StravaError,
     load_strava_config,
 )
 from bike_wind.strava.oauth import exchange_code
 from bike_wind.weather import hrrr_enabled_by_env
+
+
+_CYCLING_SPORTS = {
+    "ride",
+    "virtualride",
+    "gravelride",
+    "mountainbikeride",
+    "ebikeride",
+    "e-bike-ride",
+}
+
+
+def _is_cycling_activity(act: ActivitySummary) -> bool:
+    sport = (act.sport_type or "").lower().replace(" ", "")
+    return sport in _CYCLING_SPORTS or "ride" in sport
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sample_route.gpx"
 
@@ -208,6 +226,14 @@ def _init_state() -> None:
         st.session_state.strava_last_error = None
     if "use_strava_segment" not in st.session_state:
         st.session_state.use_strava_segment = False
+    if "use_strava_activity" not in st.session_state:
+        st.session_state.use_strava_activity = False
+    if "recent_activities" not in st.session_state:
+        st.session_state.recent_activities = []
+    if "selected_activity" not in st.session_state:
+        st.session_state.selected_activity = None
+    if "activity_stream_error" not in st.session_state:
+        st.session_state.activity_stream_error = None
     if "_last_run" not in st.session_state:
         st.session_state._last_run = None
 
@@ -377,12 +403,15 @@ def _handle_oauth_callback(config) -> None:
 def _on_disconnect_strava() -> None:
     _clear_strava_session_tokens()
     st.session_state.use_strava_segment = False
+    st.session_state.use_strava_activity = False
 
 
 def _on_reset_strava_session() -> None:
     _clear_strava_session_tokens()
     st.session_state.use_strava_segment = False
+    st.session_state.use_strava_activity = False
     st.session_state.strava_last_error = None
+    st.session_state.activity_stream_error = None
     st.session_state._strava_reset_flash = True
 
 
@@ -404,6 +433,19 @@ def _select_strava_segment(
         "from_cache": from_cache,
     }
     st.session_state.use_strava_segment = True
+    st.session_state.use_strava_activity = False
+    st.session_state.selected_activity = None
+    st.session_state.activity_stream_error = None
+
+
+def _select_strava_activity(act: ActivitySummary) -> None:
+    """Use a recent Strava ride as the route source (clears segment selection)."""
+    st.session_state.selected_activity = act
+    st.session_state.use_strava_activity = True
+    st.session_state.use_strava_segment = False
+    st.session_state.activity_stream_error = None
+    if act.has_power and act.average_watts is not None:
+        st.session_state.power_w = int(round(act.average_watts))
 
 
 def _apply_rider_kg(kg: float, *, reset_height: bool = False) -> None:
@@ -569,11 +611,61 @@ def main() -> None:
             st.caption(f"Selected: **{m['name']}** · {m['segment_id']}")
             st.checkbox("Use this segment", key="use_strava_segment")
 
-        st.caption("GPX — use your own file instead of a segment.")
+        st.caption("Recent Strava ride — Garmin syncs here; uses the app token.")
+        if st.button(
+            "Load recent rides",
+            disabled=not strava_ready,
+            use_container_width=True,
+            key="load_recent_rides",
+        ):
+            try:
+                acts = _run_strava_call(
+                    strava_cfg,
+                    lambda c: c.list_recent_activities(per_page=30),
+                )
+                rides = [a for a in acts if _is_cycling_activity(a)]
+                st.session_state.recent_activities = rides or acts
+                st.session_state.activity_stream_error = None
+            except StravaAuthError as exc:
+                st.session_state.activity_stream_error = str(exc)
+                st.error(str(exc))
+            except Exception as exc:  # noqa: BLE001
+                msg = f"Could not list rides: {exc}"
+                st.session_state.activity_stream_error = msg
+                st.error(msg)
+
+        activities: list[ActivitySummary] = list(
+            st.session_state.get("recent_activities") or []
+        )
+        if activities:
+            labels = [ride_activity_label(a) for a in activities]
+            pick = st.selectbox("Ride", options=labels, key="recent_ride_pick")
+            chosen_act = activities[labels.index(pick)]
+            if st.button("Use this ride", use_container_width=True, key="use_ride_btn"):
+                _select_strava_activity(chosen_act)
+                st.rerun()
+
+        if st.session_state.get("use_strava_activity") and st.session_state.get(
+            "selected_activity"
+        ):
+            act = st.session_state.selected_activity
+            st.caption(
+                f"Selected ride: **{act.name}** · {ride_activity_label(act)}"
+            )
+            st.checkbox("Use this ride as route", key="use_strava_activity")
+
+        if st.session_state.get("activity_stream_error"):
+            st.caption(st.session_state.activity_stream_error)
+
+        st.caption("GPX — use your own file instead of a segment or ride.")
         uploaded = st.file_uploader("GPX", type=["gpx"], label_visibility="collapsed")
         use_sample = st.checkbox(
             "Demo route",
-            value=uploaded is None and not st.session_state.get("use_strava_segment"),
+            value=(
+                uploaded is None
+                and not st.session_state.get("use_strava_segment")
+                and not st.session_state.get("use_strava_activity")
+            ),
         )
 
     with st.container(border=True):
@@ -581,7 +673,7 @@ def main() -> None:
         when = st.datetime_input(
             "When (UTC)",
             value=default_dt,
-            help="Forecast time for a future attempt. Timed GPX rides use their start time for wind instead.",
+            help="Forecast time for a future attempt. Timed GPX or Strava rides use their start time for wind instead.",
         )
         labels = position_labels()
         current_label = POSITION_PRESETS[st.session_state.position_key].label
@@ -655,13 +747,32 @@ def main() -> None:
     if not run and not last_run:
         return
 
+    use_activity = bool(st.session_state.get("use_strava_activity")) and bool(
+        st.session_state.get("selected_activity")
+    )
     use_strava = bool(st.session_state.get("use_strava_segment")) and bool(
         st.session_state.get("strava_segment_id")
     )
 
     if run:
         try:
-            if use_strava and strava_ready:
+            if use_activity and strava_ready:
+                act: ActivitySummary = st.session_state.selected_activity
+                try:
+                    route = _run_strava_call(
+                        strava_cfg,
+                        lambda c: c.load_activity_route(
+                            act.activity_id, start_date=act.start_date
+                        ),
+                    )
+                except (StravaAuthError, StravaError) as exc:
+                    st.session_state.activity_stream_error = (
+                        f"Ride streams unavailable ({exc}). Check activity:read scope."
+                    )
+                    st.error(st.session_state.activity_stream_error)
+                    return
+                source_label = f"Strava ride: {act.name}"
+            elif use_strava and strava_ready:
                 meta, route = _run_strava_call(
                     strava_cfg,
                     lambda c: c.load_segment_route(int(st.session_state.strava_segment_id)),

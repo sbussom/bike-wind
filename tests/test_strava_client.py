@@ -419,3 +419,32 @@ def test_cache_roundtrip(tmp_path: Path) -> None:
     assert got is not None
     assert got.name == "N"
     assert got.route.lats == [1.0, 2.0]
+
+
+def test_load_activity_route_absolute_times(tmp_path: Path) -> None:
+    session = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {
+        "latlng": {"data": [[26.1, -80.1], [26.11, -80.1], [26.12, -80.1]]},
+        "distance": {"data": [0.0, 100.0, 200.0]},
+        "altitude": {"data": [2.0, 4.0, 6.0]},
+        "time": {"data": [0, 30, 60]},
+        "velocity_smooth": {"data": [3.2, 3.4, 3.3]},
+        "watts": {"data": [180, 190, 200]},
+    }
+    session.get.return_value = resp
+    client = StravaClient(_config(tmp_path), session=session)
+    route = client.load_activity_route(
+        99, start_date="2024-06-01T14:00:00Z"
+    )
+    assert len(route) == 3
+    assert route.has_actual_speeds
+    assert route.start_time is not None
+    assert route.start_time.year == 2024
+    assert route.start_time.hour == 14
+    assert session.get.call_args[0][0].endswith("/activities/99/streams")
+    keys = session.get.call_args.kwargs["params"]["keys"]
+    assert "velocity_smooth" in keys
+    assert "watts" in keys
+    assert "time" in keys
