@@ -13,6 +13,7 @@ from bike_wind.gpx.parse import RouteStreams
 from bike_wind.settings import get_setting
 from bike_wind.strava.cache import CachedSegment, SegmentCache
 from bike_wind.strava import errors as strava_errors
+from bike_wind.strava.models import ActivitySummary
 from bike_wind.strava.oauth import OAuthTokenError, OAuthTokens, refresh_access_token
 from bike_wind.strava.rate_limit import RateLimitExceeded, RateLimiter, RateLimitStatus
 from bike_wind.strava.urls import ParsedStravaRef, parse_strava_segment_ref
@@ -81,24 +82,6 @@ class ExploreHit:
     start_lon: float | None = None
     end_lat: float | None = None
     end_lon: float | None = None
-
-
-@dataclass(frozen=True)
-class ActivitySummary:
-    activity_id: int
-    name: str
-    sport_type: str
-    start_date: str  # ISO UTC from Strava
-    distance_m: float
-    moving_time_s: int
-    elapsed_time_s: int
-    average_watts: float | None
-    start_lat: float | None = None
-    start_lon: float | None = None
-
-    @property
-    def has_power(self) -> bool:
-        return self.average_watts is not None and self.average_watts > 0
 
 
 class StravaError(RuntimeError):

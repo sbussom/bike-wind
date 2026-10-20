@@ -1,7 +1,6 @@
 """Strava segment fetch, OAuth, cache, and rate limiting."""
 
 from bike_wind.strava.client import (
-    ActivitySummary,
     ExploreHit,
     SegmentMeta,
     StarredSegment,
@@ -12,6 +11,7 @@ from bike_wind.strava.client import (
     StravaRateLimitError,
     load_strava_config,
 )
+from bike_wind.strava.models import ActivitySummary
 from bike_wind.strava.urls import ParsedStravaRef, parse_strava_segment_ref
 
 __all__ = [

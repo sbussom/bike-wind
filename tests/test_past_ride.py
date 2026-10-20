@@ -16,7 +16,8 @@ from bike_wind.past_ride import (
 )
 from bike_wind.predict import PredictionResult
 from bike_wind.physics.forces import RiderBikeParams, WindComponents
-from bike_wind.strava.client import ActivitySummary, StravaClient, StravaConfig
+from bike_wind.strava.client import StravaClient, StravaConfig
+from bike_wind.strava.models import ActivitySummary
 
 
 def test_parse_activity_start_z() -> None:
