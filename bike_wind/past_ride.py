@@ -9,7 +9,8 @@ from bike_wind.analysis import format_duration
 from bike_wind.physics.forces import RiderBikeParams
 from bike_wind.predict import downsample_route, predict_speeds
 from bike_wind.rider import resolve_aero, standing_height_to_wind_z_m
-from bike_wind.strava.client import ActivitySummary, StravaClient
+# Public package exports (avoids brittle deep imports if client layout shifts).
+from bike_wind.strava import ActivitySummary, StravaClient
 
 
 @dataclass(frozen=True)
