@@ -83,6 +83,24 @@ class ExploreHit:
     end_lon: float | None = None
 
 
+@dataclass(frozen=True)
+class ActivitySummary:
+    activity_id: int
+    name: str
+    sport_type: str
+    start_date: str  # ISO UTC from Strava
+    distance_m: float
+    moving_time_s: int
+    elapsed_time_s: int
+    average_watts: float | None
+    start_lat: float | None = None
+    start_lon: float | None = None
+
+    @property
+    def has_power(self) -> bool:
+        return self.average_watts is not None and self.average_watts > 0
+
+
 class StravaError(RuntimeError):
     pass
 
@@ -398,11 +416,61 @@ class StravaClient:
             )
         return hits
 
+    def list_recent_activities(
+        self,
+        *,
+        per_page: int = 30,
+        page: int = 1,
+    ) -> list[ActivitySummary]:
+        """List the authenticated athlete's recent activities (needs activity:read)."""
+        data = self._get(
+            "/athlete/activities",
+            params={"per_page": per_page, "page": page},
+        )
+        if not isinstance(data, list):
+            raise StravaError("Unexpected activities response")
+        out: list[ActivitySummary] = []
+        for item in data:
+            start = item.get("start_latlng") or []
+            watts = item.get("average_watts")
+            if watts is None:
+                watts = item.get("weighted_average_watts")
+            sport = str(item.get("sport_type") or item.get("type") or "Ride")
+            out.append(
+                ActivitySummary(
+                    activity_id=int(item["id"]),
+                    name=str(item.get("name") or item["id"]),
+                    sport_type=sport,
+                    start_date=str(item.get("start_date") or ""),
+                    distance_m=float(item.get("distance") or 0.0),
+                    moving_time_s=int(item.get("moving_time") or 0),
+                    elapsed_time_s=int(item.get("elapsed_time") or 0),
+                    average_watts=float(watts) if watts is not None else None,
+                    start_lat=float(start[0]) if len(start) >= 2 else None,
+                    start_lon=float(start[1]) if len(start) >= 2 else None,
+                )
+            )
+        return out
+
+    def load_activity_route(self, activity_id: int) -> RouteStreams:
+        """Activity latlng/distance/altitude streams as a RouteStreams."""
+        return self._fetch_activity_streams_as_route(activity_id)
+
+    def _fetch_activity_streams_as_route(self, activity_id: int) -> RouteStreams:
+        data = self._get(
+            f"/activities/{activity_id}/streams",
+            params={"keys": "latlng,distance,altitude", "key_by_type": "true"},
+        )
+        return self._streams_payload_to_route(data)
+
     def _fetch_streams_as_route(self, segment_id: int) -> RouteStreams:
         data = self._get(
             f"/segments/{segment_id}/streams",
             params={"keys": "latlng,distance,altitude", "key_by_type": "true"},
         )
+        return self._streams_payload_to_route(data)
+
+    def _streams_payload_to_route(self, data: Any) -> RouteStreams:
         # key_by_type → {"latlng": {"data": [[lat,lng],...]}, ...}
         if isinstance(data, dict) and "latlng" in data:
             latlng = data["latlng"]["data"]
@@ -417,7 +485,7 @@ class StravaClient:
             raise StravaError("Unexpected streams response shape")
 
         if len(latlng) < 2:
-            raise StravaError("Segment streams had fewer than 2 points")
+            raise StravaError("Streams had fewer than 2 points")
 
         lats = [float(p[0]) for p in latlng]
         lons = [float(p[1]) for p in latlng]

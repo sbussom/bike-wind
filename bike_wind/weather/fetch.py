@@ -11,6 +11,7 @@ import requests
 from bike_wind.physics.constants import RIDER_HEIGHT_M, Z0_OPEN_GRASS
 from bike_wind.weather.cache import ForecastCache
 from bike_wind.weather.hrrr import fetch_hrrr_along_route, route_in_conus
+from bike_wind.weather.archive import fetch_archive_along_route
 from bike_wind.weather.open_meteo import (
     DEFAULT_TIMEOUT_S,
     ForecastPoint,
@@ -22,7 +23,7 @@ from bike_wind.weather.open_meteo import (
 @dataclass(frozen=True)
 class WeatherFetchResult:
     points: list[ForecastPoint]
-    source: str  # "open-meteo" | "hrrr"
+    source: str  # "open-meteo" | "hrrr" | "open-meteo-archive"
     message: str | None = None
 
 
@@ -33,6 +34,7 @@ def fetch_weather_along_route(
     when: datetime,
     *,
     prefer_hrrr: bool = False,
+    use_archive: bool = False,
     max_samples: int = 12,
     z0_m: float = Z0_OPEN_GRASS,
     z_m: float = RIDER_HEIGHT_M,
@@ -44,10 +46,26 @@ def fetch_weather_along_route(
 
     Open-Meteo is always available as primary/fallback. When ``prefer_hrrr`` is
     True and the route is in CONUS, try HRRR first; on failure or out-of-domain,
-    fall back to Open-Meteo with a clear message.
+    fall back to Open-Meteo with a clear message. When ``use_archive`` is True,
+    use Open-Meteo Historical Weather instead of the forecast product.
     """
     cache = cache or ForecastCache()
     http = session or requests.Session()
+
+    if use_archive:
+        points = fetch_archive_along_route(
+            lats,
+            lons,
+            bearings_deg,
+            when,
+            max_samples=max_samples,
+            z0_m=z0_m,
+            z_m=z_m,
+            session=http,
+            timeout_s=timeout_s,
+            cache=cache,
+        )
+        return WeatherFetchResult(points=points, source="open-meteo-archive")
 
     if prefer_hrrr:
         if not route_in_conus(lats, lons):

@@ -181,6 +181,32 @@ def test_list_starred_paginates_until_exhausted(tmp_path: Path) -> None:
     assert starred[-1].segment_id == 1016
 
 
+def test_list_recent_activities(tmp_path: Path) -> None:
+    session = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = [
+        {
+            "id": 55,
+            "name": "Sunset",
+            "sport_type": "Ride",
+            "start_date": "2024-01-02T18:00:00Z",
+            "distance": 40000,
+            "moving_time": 5400,
+            "elapsed_time": 5600,
+            "average_watts": 195,
+            "start_latlng": [26.1, -80.1],
+        }
+    ]
+    session.get.return_value = resp
+    client = StravaClient(_config(tmp_path), session=session)
+    acts = client.list_recent_activities()
+    assert len(acts) == 1
+    assert acts[0].activity_id == 55
+    assert acts[0].has_power is True
+    assert session.get.call_args[0][0].endswith("/athlete/activities")
+
+
 def test_explore_top_10(tmp_path: Path) -> None:
     session = MagicMock()
     resp = MagicMock()

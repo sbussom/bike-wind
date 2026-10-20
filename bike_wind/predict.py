@@ -77,6 +77,7 @@ def predict_speeds(
     wind_height_m: float = RIDER_HEIGHT_M,
     target_time_s: float | None = None,
     prefer_hrrr: bool = False,
+    use_archive: bool = False,
 ) -> PredictionResult:
     """Solve speeds with and without wind; attach time band, KOM power, bins."""
     grades = route.grades()
@@ -100,7 +101,8 @@ def predict_speeds(
             route.lons,
             bearings,
             when,
-            prefer_hrrr=prefer_hrrr,
+            prefer_hrrr=prefer_hrrr and not use_archive,
+            use_archive=use_archive,
             max_samples=max_weather_samples,
             z_m=wind_height_m,
         )
