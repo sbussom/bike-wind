@@ -25,7 +25,7 @@ def test_parse_activity_start_z() -> None:
     assert dt == datetime(2024, 3, 15, 14, 30, tzinfo=timezone.utc)
 
 
-def test_ride_activity_label_includes_power() -> None:
+def test_ride_activity_label_name_date_distance() -> None:
     act = ActivitySummary(
         activity_id=1,
         name="Morning",
@@ -37,8 +37,10 @@ def test_ride_activity_label_includes_power() -> None:
         average_watts=210.0,
     )
     label = ride_activity_label(act)
-    assert "210 W" in label
+    assert "Morning" in label
+    assert "2024-03-15" in label
     assert "25.0 km" in label
+    assert "210 W" not in label
 
 
 def test_compare_activity_uses_fallback_power(tmp_path: Path) -> None:

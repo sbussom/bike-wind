@@ -119,7 +119,7 @@ def compare_activity(
 
 
 def ride_activity_label(act: ActivitySummary) -> str:
+    """Compact picker label: name, date, distance."""
     when = (act.start_date or "")[:10]
     km = act.distance_m / 1000.0
-    watts = f"{act.average_watts:.0f} W" if act.has_power else "no power"
-    return f"{when} · {act.name} · {km:.1f} km · {watts}"
+    return f"{act.name} · {when} · {km:.1f} km"

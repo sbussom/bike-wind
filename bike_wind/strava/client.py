@@ -408,36 +408,54 @@ class StravaClient:
         *,
         per_page: int = 30,
         page: int = 1,
+        after: int | None = None,
+        before: int | None = None,
     ) -> list[ActivitySummary]:
-        """List the authenticated athlete's recent activities (needs activity:read)."""
-        data = self._get(
-            "/athlete/activities",
-            params={"per_page": per_page, "page": page},
-        )
+        """List the authenticated athlete's activities (needs activity:read).
+
+        Optional ``after`` / ``before`` are Unix epoch seconds (UTC).
+        """
+        params: dict[str, Any] = {"per_page": per_page, "page": page}
+        if after is not None:
+            params["after"] = int(after)
+        if before is not None:
+            params["before"] = int(before)
+        data = self._get("/athlete/activities", params=params)
         if not isinstance(data, list):
             raise StravaError("Unexpected activities response")
-        out: list[ActivitySummary] = []
-        for item in data:
-            start = item.get("start_latlng") or []
-            watts = item.get("average_watts")
-            if watts is None:
-                watts = item.get("weighted_average_watts")
-            sport = str(item.get("sport_type") or item.get("type") or "Ride")
-            out.append(
-                ActivitySummary(
-                    activity_id=int(item["id"]),
-                    name=str(item.get("name") or item["id"]),
-                    sport_type=sport,
-                    start_date=str(item.get("start_date") or ""),
-                    distance_m=float(item.get("distance") or 0.0),
-                    moving_time_s=int(item.get("moving_time") or 0),
-                    elapsed_time_s=int(item.get("elapsed_time") or 0),
-                    average_watts=float(watts) if watts is not None else None,
-                    start_lat=float(start[0]) if len(start) >= 2 else None,
-                    start_lon=float(start[1]) if len(start) >= 2 else None,
-                )
-            )
-        return out
+        return [self._activity_from_item(item) for item in data]
+
+    def list_activities_on_date(self, day, *, per_page: int = 50) -> list[ActivitySummary]:
+        """Activities whose start falls on ``day`` (UTC calendar date)."""
+        from datetime import datetime, timedelta, timezone
+
+        start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+        end = start + timedelta(days=1)
+        return self.list_recent_activities(
+            per_page=per_page,
+            after=int(start.timestamp()) - 1,
+            before=int(end.timestamp()),
+        )
+
+    @staticmethod
+    def _activity_from_item(item: dict[str, Any]) -> ActivitySummary:
+        start = item.get("start_latlng") or []
+        watts = item.get("average_watts")
+        if watts is None:
+            watts = item.get("weighted_average_watts")
+        sport = str(item.get("sport_type") or item.get("type") or "Ride")
+        return ActivitySummary(
+            activity_id=int(item["id"]),
+            name=str(item.get("name") or item["id"]),
+            sport_type=sport,
+            start_date=str(item.get("start_date") or ""),
+            distance_m=float(item.get("distance") or 0.0),
+            moving_time_s=int(item.get("moving_time") or 0),
+            elapsed_time_s=int(item.get("elapsed_time") or 0),
+            average_watts=float(watts) if watts is not None else None,
+            start_lat=float(start[0]) if len(start) >= 2 else None,
+            start_lon=float(start[1]) if len(start) >= 2 else None,
+        )
 
     def load_activity_route(
         self,

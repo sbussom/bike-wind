@@ -207,6 +207,35 @@ def test_list_recent_activities(tmp_path: Path) -> None:
     assert session.get.call_args[0][0].endswith("/athlete/activities")
 
 
+def test_list_activities_on_date(tmp_path: Path) -> None:
+    from datetime import date
+
+    session = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = [
+        {
+            "id": 77,
+            "name": "Morning",
+            "sport_type": "Ride",
+            "start_date": "2024-06-01T12:00:00Z",
+            "distance": 20000,
+            "moving_time": 3000,
+            "elapsed_time": 3100,
+            "average_watts": None,
+            "start_latlng": [26.1, -80.1],
+        }
+    ]
+    session.get.return_value = resp
+    client = StravaClient(_config(tmp_path), session=session)
+    acts = client.list_activities_on_date(date(2024, 6, 1))
+    assert len(acts) == 1
+    assert acts[0].activity_id == 77
+    params = session.get.call_args.kwargs["params"]
+    assert "after" in params and "before" in params
+    assert params["before"] > params["after"]
+
+
 def test_explore_top_10(tmp_path: Path) -> None:
     session = MagicMock()
     resp = MagicMock()
