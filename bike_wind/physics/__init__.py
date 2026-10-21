@@ -1,4 +1,14 @@
-"""Cycling physics: forces and iterative velocity solver."""
+"""Cycling physics: forces and iterative velocity solver.
+
+Import leaf modules (``constants``, ``forces``, ``solver``) directly when
+possible. This package ``__init__`` only re-exports and loads ``solver``
+lazily so Streamlit Cloud reloads do not deadlock while ``physics`` is
+partially initialized.
+"""
+
+from __future__ import annotations
+
+from typing import Any
 
 from bike_wind.physics.constants import (
     BIKE_MASS_GRAVEL_KG,
@@ -16,7 +26,6 @@ from bike_wind.physics.forces import (
     rolling_force,
     total_force,
 )
-from bike_wind.physics.solver import solve_speed, solve_speeds
 
 __all__ = [
     "BIKE_MASS_GRAVEL_KG",
@@ -34,3 +43,16 @@ __all__ = [
     "solve_speed",
     "solve_speeds",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy-load solver symbols (avoids import-time cycle on reload)."""
+    if name == "solve_speed":
+        from bike_wind.physics.solver import solve_speed
+
+        return solve_speed
+    if name == "solve_speeds":
+        from bike_wind.physics.solver import solve_speeds
+
+        return solve_speeds
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

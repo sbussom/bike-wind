@@ -11,11 +11,11 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from bike_wind.analysis import format_duration
-from bike_wind.gpx import parse_gpx
+from bike_wind.gpx.parse import parse_gpx
 from bike_wind.map_view import MAP_MIN_HEIGHT_PX, build_wind_route_map
-from bike_wind.physics import RiderBikeParams
-from bike_wind.predict import downsample_route, predict_speeds
 from bike_wind.physics.constants import DRIVETRAIN_EFFICIENCY
+from bike_wind.physics.forces import RiderBikeParams
+from bike_wind.predict import downsample_route, predict_speeds
 from bike_wind.rider import (
     DEFAULT_POSITION_KEY,
     DEFAULT_RIDER_KG,

@@ -1,6 +1,7 @@
 # MUST stay editable (-e). A plain `pip install .` copies bike_wind into
 # site-packages; later git pulls then leave Python on a stale client without
-# new symbols (e.g. ActivitySummary). Streamlit Cloud: reboot after bumps.
+# new symbols (e.g. distances_mi / mph helpers). Streamlit Cloud: reboot after
+# version bumps so the editable tree is what `import bike_wind` loads.
 -e .
 numpy>=1.26
 requests>=2.31
