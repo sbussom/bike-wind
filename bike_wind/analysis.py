@@ -154,6 +154,7 @@ def solve_speeds_for_power(
         crr=base.crr,
         rho=base.rho,
         tuck_on_descent=base.tuck_on_descent,
+        drivetrain_efficiency=base.drivetrain_efficiency,
     )
     return solve_speeds(params, grades, winds)
 

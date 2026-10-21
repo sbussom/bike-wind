@@ -97,9 +97,33 @@ def test_tuck_reduces_area_on_descent() -> None:
 def test_power_equals_force_times_velocity() -> None:
     p = _flat_params()
     v = 8.0
+    mech = total_force(v, p, grade=0.02) * v
     assert power_required(v, p, grade=0.02) == pytest.approx(
-        total_force(v, p, grade=0.02) * v, rel=1e-9
+        mech / p.drivetrain_efficiency, rel=1e-9
     )
+
+
+def test_drivetrain_loss_slows_speed() -> None:
+    perfect = _flat_params(power_w=250.0)
+    perfect = RiderBikeParams(
+        rider_mass_kg=perfect.rider_mass_kg,
+        power_w=250.0,
+        bike_mass_kg=perfect.bike_mass_kg,
+        cd=perfect.cd,
+        area_m2=perfect.area_m2,
+        crr=perfect.crr,
+        drivetrain_efficiency=1.0,
+    )
+    lossy = RiderBikeParams(
+        rider_mass_kg=perfect.rider_mass_kg,
+        power_w=250.0,
+        bike_mass_kg=perfect.bike_mass_kg,
+        cd=perfect.cd,
+        area_m2=perfect.area_m2,
+        crr=perfect.crr,
+        drivetrain_efficiency=0.97,
+    )
+    assert solve_speed(lossy) < solve_speed(perfect)
 
 
 def test_solve_speed_matches_power_on_flat() -> None:

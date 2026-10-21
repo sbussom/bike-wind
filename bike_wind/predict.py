@@ -63,6 +63,10 @@ class PredictionResult:
         return [d / 1000.0 for d in self.distances_m]
 
     @property
+    def distances_mi(self) -> list[float]:
+        return [d / 1609.344 for d in self.distances_m]
+
+    @property
     def speeds_with_wind_kmh(self) -> list[float]:
         return [v * 3.6 for v in self.speeds_with_wind_mps]
 
@@ -170,6 +174,7 @@ def predict_speeds(
                 crr=params.crr,
                 rho=params.rho,
                 tuck_on_descent=params.tuck_on_descent,
+                drivetrain_efficiency=params.drivetrain_efficiency,
             )
 
     speeds_calm = solve_speeds(params, grades, powers_w=powers_w)
@@ -214,6 +219,7 @@ def predict_speeds(
             crr=params.crr,
             rho=rho_mean,
             tuck_on_descent=params.tuck_on_descent,
+            drivetrain_efficiency=params.drivetrain_efficiency,
         )
         # Grade from elevation is required input to the speed solver.
         speeds_wind = solve_speeds(params_used, grades, winds, powers_w=powers_w)

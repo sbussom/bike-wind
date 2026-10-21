@@ -1,10 +1,17 @@
-"""Rider position presets, aero kit toggles, and unit helpers."""
+"""Rider position presets, surface/Crr, aero kit toggles, and unit helpers."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from bike_wind.physics.constants import BIKE_MASS_ROAD_KG, BIKE_MASS_TT_KG, RIDER_HEIGHT_M
+from bike_wind.physics.constants import (
+    BIKE_MASS_GRAVEL_KG,
+    BIKE_MASS_ROAD_KG,
+    BIKE_MASS_TT_KG,
+    CRR_DEFAULT,
+    CRR_PACKED_SAND,
+    RIDER_HEIGHT_M,
+)
 
 KG_PER_LB = 0.45359237
 CM_PER_IN = 2.54
@@ -24,6 +31,17 @@ class PositionPreset:
     cd: float
     area_m2: float
     bike_mass_kg: float
+
+
+@dataclass(frozen=True)
+class SurfacePreset:
+    """Rolling-resistance preset for tire × surface."""
+
+    key: str
+    label: str
+    crr: float
+    # Shown in UI when this is an estimate (not a lab test of one tire).
+    estimate_note: str | None = None
 
 
 POSITION_PRESETS: dict[str, PositionPreset] = {
@@ -48,6 +66,14 @@ POSITION_PRESETS: dict[str, PositionPreset] = {
         area_m2=0.42,
         bike_mass_kg=BIKE_MASS_ROAD_KG,
     ),
+    "gravel_hoods": PositionPreset(
+        key="gravel_hoods",
+        label="Gravel hoods",
+        # Wider bars / tires / upright hoods than road drops → higher Cd·A.
+        cd=1.0,
+        area_m2=0.45,
+        bike_mass_kg=BIKE_MASS_GRAVEL_KG,
+    ),
     "upright": PositionPreset(
         key="upright",
         label="Upright",
@@ -57,8 +83,28 @@ POSITION_PRESETS: dict[str, PositionPreset] = {
     ),
 }
 
-DEFAULT_POSITION_KEY = "drops"
-RIDER_WEIGHT_PRESETS_KG: tuple[float, ...] = (65.0, 70.0, 75.0, 80.0, 85.0, 90.0)
+SURFACE_PRESETS: dict[str, SurfacePreset] = {
+    "road_pavement": SurfacePreset(
+        key="road_pavement",
+        label="Road pavement (road tire)",
+        crr=CRR_DEFAULT,
+    ),
+    "packed_sand": SurfacePreset(
+        key="packed_sand",
+        label="Packed sand · 45 mm gravel tire",
+        crr=CRR_PACKED_SAND,
+        estimate_note=(
+            "Crr ≈ 0.008 is a documented estimate for ~45 mm gravel tires on "
+            "packed sand — not a lab test of this exact tire."
+        ),
+    ),
+}
+
+# Defaults match the primary gravel / packed-sand use case.
+DEFAULT_POSITION_KEY = "gravel_hoods"
+DEFAULT_SURFACE_KEY = "packed_sand"
+DEFAULT_RIDER_KG = 69.0
+RIDER_WEIGHT_PRESETS_KG: tuple[float, ...] = (65.0, 69.0, 70.0, 75.0, 80.0, 85.0, 90.0)
 
 
 @dataclass(frozen=True)
@@ -71,6 +117,10 @@ class ResolvedAero:
     bike_mass_kg: float
     full_aero_kit: bool
     non_aero: bool
+
+    @property
+    def cda(self) -> float:
+        return self.cd * self.area_m2
 
 
 def kg_to_lb(kg: float) -> float:
@@ -135,6 +185,10 @@ def resolve_aero(
     )
 
 
+def resolve_surface(surface_key: str = DEFAULT_SURFACE_KEY) -> SurfacePreset:
+    return SURFACE_PRESETS.get(surface_key) or SURFACE_PRESETS[DEFAULT_SURFACE_KEY]
+
+
 def position_labels() -> list[str]:
     return [p.label for p in POSITION_PRESETS.values()]
 
@@ -144,3 +198,14 @@ def position_key_for_label(label: str) -> str:
         if preset.label == label:
             return key
     return DEFAULT_POSITION_KEY
+
+
+def surface_labels() -> list[str]:
+    return [s.label for s in SURFACE_PRESETS.values()]
+
+
+def surface_key_for_label(label: str) -> str:
+    for key, preset in SURFACE_PRESETS.items():
+        if preset.label == label:
+            return key
+    return DEFAULT_SURFACE_KEY

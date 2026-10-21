@@ -9,6 +9,7 @@ from bike_wind.physics.constants import (
     BIKE_MASS_ROAD_KG,
     CD_DEFAULT,
     CRR_DEFAULT,
+    DRIVETRAIN_EFFICIENCY,
     G,
     R_DRY_AIR,
     RHO_DEFAULT,
@@ -28,6 +29,7 @@ class RiderBikeParams:
     crr: float = CRR_DEFAULT
     rho: float = RHO_DEFAULT
     tuck_on_descent: bool = True
+    drivetrain_efficiency: float = DRIVETRAIN_EFFICIENCY
 
     @property
     def total_mass_kg(self) -> float:
@@ -118,10 +120,18 @@ def power_required(
     grade: float = 0.0,
     wind: WindComponents | None = None,
 ) -> float:
-    """Mechanical power (W) = total force × ground speed."""
+    """Crank power (W) needed for this ground speed.
+
+    Wheel mechanical power is F·v; crank power divides by drivetrain
+    efficiency (~3% loss) so meter watts compare to this value.
+    """
     if ground_speed_mps <= 0.0:
         return 0.0
-    return total_force(ground_speed_mps, params, grade=grade, wind=wind) * ground_speed_mps
+    mech = total_force(ground_speed_mps, params, grade=grade, wind=wind) * ground_speed_mps
+    eta = params.drivetrain_efficiency
+    if eta <= 0.0:
+        return mech
+    return mech / eta
 
 
 def _grade_to_theta(grade: float) -> float:

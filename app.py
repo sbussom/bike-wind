@@ -15,16 +15,23 @@ from bike_wind.gpx import parse_gpx
 from bike_wind.map_view import MAP_MIN_HEIGHT_PX, build_wind_route_map
 from bike_wind.physics import RiderBikeParams
 from bike_wind.predict import downsample_route, predict_speeds
+from bike_wind.physics.constants import DRIVETRAIN_EFFICIENCY
 from bike_wind.rider import (
     DEFAULT_POSITION_KEY,
+    DEFAULT_RIDER_KG,
+    DEFAULT_SURFACE_KEY,
     POSITION_PRESETS,
+    SURFACE_PRESETS,
     kg_to_lb,
     lb_to_kg,
     position_key_for_label,
     position_labels,
     resolve_aero,
+    resolve_surface,
     smart_default_height_cm,
     standing_height_to_wind_z_m,
+    surface_key_for_label,
+    surface_labels,
 )
 try:
     from bike_wind.settings import strava_secrets_presence
@@ -201,17 +208,19 @@ def _apply_theme(dark: bool) -> None:
 
 def _init_state() -> None:
     if "rider_kg" not in st.session_state:
-        st.session_state.rider_kg = 75.0
+        st.session_state.rider_kg = DEFAULT_RIDER_KG
     if "bike_kg" not in st.session_state:
         st.session_state.bike_kg = POSITION_PRESETS[DEFAULT_POSITION_KEY].bike_mass_kg
     if "bike_mass_manual" not in st.session_state:
         st.session_state.bike_mass_manual = False
     if "height_cm" not in st.session_state:
-        st.session_state.height_cm = smart_default_height_cm(75.0)
+        st.session_state.height_cm = smart_default_height_cm(DEFAULT_RIDER_KG)
     if "height_manual" not in st.session_state:
         st.session_state.height_manual = False
     if "position_key" not in st.session_state:
         st.session_state.position_key = DEFAULT_POSITION_KEY
+    if "surface_key" not in st.session_state:
+        st.session_state.surface_key = DEFAULT_SURFACE_KEY
     if "power_w" not in st.session_state:
         st.session_state.power_w = 220
     if "strava_meta" not in st.session_state:
@@ -787,7 +796,7 @@ def _style_speed_axes(ax, *, dark: bool, fig) -> tuple[str, str, str]:
     bg, fg, accent, spine = _chart_colors(dark)
     fig.patch.set_facecolor(bg)
     ax.set_facecolor(bg)
-    ax.set_xlabel("Distance (km)", color=fg)
+    ax.set_xlabel("Distance (mi)", color=fg)
     ax.set_ylabel("mph", color=fg)
     ax.tick_params(colors=fg)
     for sp in ax.spines.values():
@@ -796,25 +805,41 @@ def _style_speed_axes(ax, *, dark: bool, fig) -> tuple[str, str, str]:
     return bg, fg, accent
 
 
-def _validation_help_text(result, *, position_label: str, cda: float) -> str:
+def _validation_help_text(
+    result,
+    *,
+    position_label: str,
+    cda: float,
+    surface_label: str,
+    crr_note: str | None,
+) -> str:
     """Plain-language parameter blurb for the validation chart popover."""
     p = result.params
     grade = result.mean_grade_pct
+    eta_pct = (1.0 - p.drivetrain_efficiency) * 100.0
     power_line = (
-        f"Power: recorded meter watts (mean ≈ {p.power_w:.0f} W)."
+        f"Power: recorded meter watts (mean ≈ {p.power_w:.0f} W crank)."
         if result.power_source == "meter"
         else f"Power: entered rider power {p.power_w:.0f} W (no power meter)."
     )
+    crr_line = f"Crr={p.crr:.4f} · {surface_label}."
+    if crr_note:
+        crr_line = f"{crr_line} {crr_note}"
     lines = [
         power_line,
-        f"Mass: {p.total_mass_kg:.1f} kg rider+bike.",
+        f"System mass: {p.total_mass_kg:.1f} kg "
+        f"(rider {p.rider_mass_kg:.1f} + bike {p.bike_mass_kg:.1f}).",
         f"Position: {position_label} · Cd·A={cda:.3f}.",
-        f"Rolling resistance Crr={p.crr:.4f}.",
+        crr_line,
+        f"Drivetrain: ~{eta_pct:.0f}% loss (efficiency {p.drivetrain_efficiency:.2f}).",
         f"Air density ρ={result.rho_mean:.3f} kg/m³ from temp/pressure.",
         f"Wind: {result.wind_label(unit='mph')}.",
         f"Grade: elevation rise/run in the solver (mean |grade| ≈ {grade:.1f}%).",
-        "Units: speed in mph.",
-        "Lines: teal = model with wind+grade; grey = recorded speed (velocity_smooth or time+distance).",
+        "Model does not brake; it reacts to every grade change, so descents "
+        "spike higher than a real ride.",
+        "Units: speed mph, distance miles.",
+        "Lines: teal = model with wind+grade; grey = recorded speed "
+        "(velocity_smooth or time+distance).",
     ]
     return "\n".join(lines)
 
@@ -1057,6 +1082,22 @@ def main() -> None:
             if not st.session_state.bike_mass_manual:
                 _apply_bike_kg(POSITION_PRESETS[position_key].bike_mass_kg, manual=False)
 
+        surf_labels = surface_labels()
+        current_surf = SURFACE_PRESETS[st.session_state.surface_key].label
+        surf_chosen = st.selectbox(
+            "Surface / Crr",
+            options=surf_labels,
+            index=surf_labels.index(current_surf) if current_surf in surf_labels else 0,
+            help="Rolling resistance. Packed-sand gravel value is an estimate, not a lab test.",
+        )
+        surface_key = surface_key_for_label(surf_chosen)
+        st.session_state.surface_key = surface_key
+        surface = resolve_surface(surface_key)
+        st.caption(
+            f"Crr = {surface.crr:.4f}"
+            + (f" · {surface.estimate_note}" if surface.estimate_note else "")
+        )
+
         power_w = st.slider("Power (W)", 80, 450, int(st.session_state.power_w), 5)
         st.session_state.power_w = power_w
 
@@ -1093,7 +1134,9 @@ def main() -> None:
         st.caption(
             f"{POSITION_PRESETS[aero.position_key].label} · "
             f"Cd·A={aero.cd * aero.area_m2:.3f} · "
-            f"{st.session_state.rider_kg + aero.bike_mass_kg:.1f} kg total"
+            f"Crr={surface.crr:.4f} · "
+            f"{st.session_state.rider_kg:.0f}+{aero.bike_mass_kg:.0f}="
+            f"{st.session_state.rider_kg + aero.bike_mass_kg:.0f} kg"
         )
 
         run = st.button("Run", type="primary", use_container_width=True)
@@ -1181,12 +1224,15 @@ def main() -> None:
             return
 
         route = downsample_route(route, max_points=300)
+        surface = resolve_surface(st.session_state.surface_key)
         params = RiderBikeParams(
             rider_mass_kg=float(st.session_state.rider_kg),
             power_w=float(power_w),
             bike_mass_kg=aero.bike_mass_kg,
             cd=aero.cd,
             area_m2=aero.area_m2,
+            crr=surface.crr,
+            drivetrain_efficiency=DRIVETRAIN_EFFICIENCY,
         )
         wind_z = standing_height_to_wind_z_m(float(st.session_state.height_cm))
         with st.spinner("Fetching wind and solving…"):
@@ -1206,23 +1252,33 @@ def main() -> None:
             "route_km": route.distances_m[-1] / 1000.0,
             "position_key": aero.position_key,
             "cda": aero.cd * aero.area_m2,
+            "surface_key": surface.key,
+            "surface_label": surface.label,
+            "crr_note": surface.estimate_note,
         }
         source_label_out = source_label
         route_km = route.distances_m[-1] / 1000.0
         position_key_out = aero.position_key
         cda_out = aero.cd * aero.area_m2
+        surface_label_out = surface.label
+        crr_note_out = surface.estimate_note
     else:
         result = last_run["result"]
         source_label_out = last_run["source_label"]
         route_km = last_run["route_km"]
         position_key_out = last_run["position_key"]
         cda_out = last_run["cda"]
+        surface_label_out = last_run.get("surface_label") or resolve_surface(
+            last_run.get("surface_key", DEFAULT_SURFACE_KEY)
+        ).label
+        crr_note_out = last_run.get("crr_note")
 
     with st.container(border=True):
         st.html('<p class="bw-section-label">Results</p>')
         st.caption(
             f"{source_label_out} · {route_km:.1f} km · "
-            f"{POSITION_PRESETS[position_key_out].label} · Cd·A={cda_out:.3f}"
+            f"{POSITION_PRESETS[position_key_out].label} · Cd·A={cda_out:.3f} · "
+            f"Crr={result.params.crr:.4f}"
         )
         m1, m2, m3 = st.columns(3)
         m1.metric("Time (with wind)", format_duration(result.eta_with_wind_s))
@@ -1264,21 +1320,21 @@ def main() -> None:
         fig, ax = plt.subplots(figsize=(9, 3.4))
         bg, fg, accent = _style_speed_axes(ax, dark=dark, fig=fig)
         ax.plot(
-            result.distances_km,
+            result.distances_mi,
             result.speeds_no_wind_mph,
             label="Calm",
             color="#8fa398",
             linestyle="--",
         )
         ax.plot(
-            result.distances_km,
+            result.distances_mi,
             result.speeds_with_wind_mph,
             label="With wind",
             color=accent,
             linewidth=2,
         )
-        if result.distances_km:
-            ax.set_xlim(result.distances_km[0], result.distances_km[-1])
+        if result.distances_mi:
+            ax.set_xlim(result.distances_mi[0], result.distances_mi[-1])
         legend = ax.legend(facecolor=bg, edgecolor="#3a4a42" if dark else "#c5d0ca")
         for text in legend.get_texts():
             text.set_color(fg)
@@ -1299,13 +1355,15 @@ def main() -> None:
                         result,
                         position_label=POSITION_PRESETS[position_key_out].label,
                         cda=cda_out,
+                        surface_label=surface_label_out,
+                        crr_note=crr_note_out,
                     )
                 )
 
         fig2, ax2 = plt.subplots(figsize=(9, 3.4))
         bg2, fg2, accent2 = _style_speed_axes(ax2, dark=dark, fig=fig2)
         ax2.plot(
-            result.distances_km,
+            result.distances_mi,
             result.speeds_with_wind_mph,
             label="Model",
             color=accent2,
@@ -1313,7 +1371,7 @@ def main() -> None:
         )
         if result.has_actual_speeds and result.actual_speeds_mph is not None:
             ax2.plot(
-                result.distances_km,
+                result.distances_mi,
                 result.actual_speeds_mph,
                 label="Actual",
                 color="#8fa398",
@@ -1328,8 +1386,8 @@ def main() -> None:
         st.caption(
             f"{result.power_source_note} · {result.wind_label(unit='mph')}"
         )
-        if result.distances_km:
-            ax2.set_xlim(result.distances_km[0], result.distances_km[-1])
+        if result.distances_mi:
+            ax2.set_xlim(result.distances_mi[0], result.distances_mi[-1])
         leg2 = ax2.legend(facecolor=bg2, edgecolor="#3a4a42" if dark else "#c5d0ca")
         for text in leg2.get_texts():
             text.set_color(fg2)

@@ -91,6 +91,7 @@ def solve_speeds(
                 crr=params.crr,
                 rho=params.rho,
                 tuck_on_descent=params.tuck_on_descent,
+                drivetrain_efficiency=params.drivetrain_efficiency,
             )
         else:
             point_params = params
