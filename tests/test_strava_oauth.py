@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from bike_wind.strava.oauth import (
+    ACTIVITY_SCOPE_HINT,
     DEFAULT_REDIRECT_URI,
     OAuthTokenError,
     READ_SCOPE,
@@ -14,6 +15,7 @@ from bike_wind.strava.oauth import (
     exchange_code,
     refresh_access_token,
     safe_oauth_error_detail,
+    scope_has_activity_read,
 )
 
 
@@ -100,6 +102,17 @@ def test_authorize_url_includes_activity_read_scope() -> None:
     assert "read" in url
     assert "gustypower.streamlit.app" in url
     assert READ_SCOPE == "read,activity:read"
+    assert "approval_prompt=force" in url
+
+
+def test_scope_has_activity_read() -> None:
+    assert scope_has_activity_read("read,activity:read")
+    assert scope_has_activity_read("read activity:read")
+    assert scope_has_activity_read("activity:read_all")
+    assert not scope_has_activity_read("read")
+    assert not scope_has_activity_read(None)
+    assert not scope_has_activity_read("")
+    assert "allow access to activities" in ACTIVITY_SCOPE_HINT.lower()
 
 
 def test_exchange_code_success() -> None:

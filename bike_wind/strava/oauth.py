@@ -1,4 +1,4 @@
-"""Strava OAuth helpers (read scope). Tokens stay in session — never logged."""
+"""Strava OAuth helpers. Tokens stay in session — never logged."""
 
 from __future__ import annotations
 
@@ -13,7 +13,10 @@ AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
 TOKEN_URL = "https://www.strava.com/oauth/token"
 # read = public segment GPS; activity:read = athlete recent rides / streams
 READ_SCOPE = "read,activity:read"
+ACTIVITY_READ_SCOPE = "activity:read"
 DEFAULT_REDIRECT_URI = "https://gustypower.streamlit.app"
+# Shown when the browser session token lacks activity:read (secrets stay read-only).
+ACTIVITY_SCOPE_HINT = "Connect again and allow access to activities."
 
 # Long hex/base64-ish blobs that look like tokens — never show in UI.
 _TOKENISH = re.compile(r"[A-Za-z0-9_\-]{20,}")
@@ -42,15 +45,25 @@ def oauth_configured(client_id: str | None, client_secret: str | None, redirect_
 
 
 def build_authorize_url(client_id: str, redirect_uri: str, *, state: str = "bike_wind") -> str:
+    """Authorize URL that always re-prompts so activity:read can be granted."""
     params = {
         "client_id": client_id,
         "response_type": "code",
         "redirect_uri": redirect_uri,
-        "approval_prompt": "auto",
+        # force: prior "read"-only approvals must show the activity permission again
+        "approval_prompt": "force",
         "scope": READ_SCOPE,
         "state": state,
     }
     return f"{AUTHORIZE_URL}?{urlencode(params)}"
+
+
+def scope_has_activity_read(scope: str | None) -> bool:
+    """True when OAuth scope includes activity:read (or activity:read_all)."""
+    if not scope:
+        return False
+    parts = {p.strip().lower() for p in str(scope).replace(",", " ").split() if p.strip()}
+    return ACTIVITY_READ_SCOPE in parts or "activity:read_all" in parts
 
 
 def _coerce_client_id(client_id: str) -> str | int:

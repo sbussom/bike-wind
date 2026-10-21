@@ -57,10 +57,12 @@ from bike_wind.strava import (
     load_strava_config,
 )
 from bike_wind.strava.oauth import (
+    ACTIVITY_SCOPE_HINT,
     DEFAULT_REDIRECT_URI,
     build_authorize_url,
     exchange_code,
     oauth_configured,
+    scope_has_activity_read,
 )
 from bike_wind.weather import hrrr_enabled_by_env
 
@@ -235,6 +237,8 @@ def _init_state() -> None:
         st.session_state.strava_oauth_connected = False
     if "strava_token_expires_at" not in st.session_state:
         st.session_state.strava_token_expires_at = None
+    if "strava_token_scope" not in st.session_state:
+        st.session_state.strava_token_scope = None
     if "strava_refreshed_access_token" not in st.session_state:
         st.session_state.strava_refreshed_access_token = None
     if "strava_refreshed_refresh_token" not in st.session_state:
@@ -289,6 +293,7 @@ def _clear_strava_session_tokens() -> None:
     st.session_state.strava_refresh_token = None
     st.session_state.strava_oauth_connected = False
     st.session_state.strava_token_expires_at = None
+    st.session_state.strava_token_scope = None
     st.session_state.strava_refreshed_access_token = None
     st.session_state.strava_refreshed_refresh_token = None
 
@@ -344,14 +349,29 @@ def _persist_refreshed_tokens(tokens) -> None:
         if tokens.refresh_token:
             st.session_state.strava_refresh_token = tokens.refresh_token
         st.session_state.strava_token_expires_at = tokens.expires_at
+        if tokens.scope:
+            st.session_state.strava_token_scope = tokens.scope
     else:
         st.session_state.strava_refreshed_access_token = tokens.access_token
         if tokens.refresh_token:
             st.session_state.strava_refreshed_refresh_token = tokens.refresh_token
 
 
+def _session_has_activity_read() -> bool:
+    """Connected browser token includes activity:read (not the owner secrets token)."""
+    return bool(
+        st.session_state.get("strava_oauth_connected")
+        and st.session_state.get("strava_access_token")
+        and scope_has_activity_read(st.session_state.get("strava_token_scope"))
+    )
+
+
 def _strava_client(config, *, secrets_only: bool = False) -> StravaClient:
-    """Client for segment/activity calls; auto-refreshes on 401 into session_state."""
+    """Client for segment calls; auto-refreshes on 401 into session_state.
+
+    Prefer secrets (or secrets refresh) for public segment-by-id. Personal rides
+    must use ``_activity_strava_client`` instead — never this path with scope=read.
+    """
 
     def on_refreshed(tokens) -> None:
         _persist_refreshed_tokens(tokens)
@@ -371,11 +391,27 @@ def _strava_client(config, *, secrets_only: bool = False) -> StravaClient:
     )
 
 
+def _activity_strava_client(config) -> StravaClient | None:
+    """Session-only client when scope includes activity:read; else None."""
+    if not _session_has_activity_read():
+        return None
+
+    def on_refreshed(tokens) -> None:
+        _persist_refreshed_tokens(tokens)
+
+    return StravaClient(
+        config,
+        access_token=st.session_state.strava_access_token,
+        refresh_token=st.session_state.strava_refresh_token,
+        on_tokens_refreshed=on_refreshed,
+    )
+
+
 def _run_strava_call(config, fn):
-    """Run ``fn(client)``; secrets path may retry after refresh failure.
+    """Run ``fn(client)`` for segments; secrets path may retry after refresh failure.
 
     Connected visitors keep their session token only — never silently fall back
-    to the owner secrets token for personal rides.
+    to the owner secrets token for personal rides (use ``_run_activity_call``).
     """
     was_connected = bool(st.session_state.get("strava_oauth_connected"))
     client = _strava_client(config)
@@ -392,6 +428,26 @@ def _run_strava_call(config, fn):
             ) from exc
         client2 = _strava_client(config, secrets_only=True)
         return fn(client2)
+
+
+def _run_activity_call(config, fn):
+    """Run ``fn(client)`` for activities/efforts/streams — session + activity:read only.
+
+    Never sends the owner secrets token (scope read) to /athlete/activities.
+    """
+    client = _activity_strava_client(config)
+    if client is None:
+        raise StravaAuthError(ACTIVITY_SCOPE_HINT, kind="forbidden_scope")
+    try:
+        return fn(client)
+    except StravaAuthError as exc:
+        if getattr(exc, "kind", None) == "refresh_failed":
+            _clear_strava_session_tokens()
+            raise StravaAuthError(
+                "Strava session expired — reconnect.",
+                kind="refresh_failed",
+            ) from exc
+        raise
 
 
 def _token_source(config) -> str:
@@ -438,15 +494,21 @@ def _handle_oauth_callback(config) -> None:
             client_secret=config.client_secret,  # type: ignore[arg-type]
             code=str(code),
         )
+        # Prefer token payload scope; fall back to redirect ?scope=
+        scope = tokens.scope or (str(params.get("scope")) if params.get("scope") else None)
         st.session_state.strava_oauth_connected = True
         st.session_state.strava_access_token = tokens.access_token
         st.session_state.strava_refresh_token = tokens.refresh_token
         st.session_state.strava_token_expires_at = tokens.expires_at
+        st.session_state.strava_token_scope = scope
         st.session_state.strava_oauth_error = None
         _clear_activity_route_state()
         st.session_state._oauth_handled_code = code
         _clear_oauth_query_params()
-        st.success("Strava connected for this browser session.")
+        if scope_has_activity_read(scope):
+            st.success("Strava connected for this browser session.")
+        else:
+            st.warning(ACTIVITY_SCOPE_HINT)
     except Exception as exc:  # noqa: BLE001 — no response body / tokens in message
         st.session_state.strava_oauth_error = f"Strava OAuth failed: {exc}"
         _clear_oauth_query_params()
@@ -535,14 +597,17 @@ def _filter_cycling(acts: list[ActivitySummary]) -> list[ActivitySummary]:
 
 
 def _ensure_recent_rides(config, *, limit: int = 10) -> None:
-    """Fetch the latest rides once per token mode (session vs secrets)."""
-    if not _strava_ready(config):
+    """Fetch recent rides with the session activity:read token only (never secrets)."""
+    if not _session_has_activity_read():
+        st.session_state.recent_activities = []
+        if st.session_state.get("strava_oauth_connected"):
+            st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
         return
-    fp = "session" if st.session_state.get("strava_oauth_connected") else "secrets"
+    fp = "session-activity"
     if st.session_state.get("_rides_token_fp") == fp and st.session_state.recent_activities:
         return
     try:
-        acts = _run_strava_call(
+        acts = _run_activity_call(
             config,
             lambda c: c.list_recent_activities(per_page=max(limit * 2, 20)),
         )
@@ -552,14 +617,22 @@ def _ensure_recent_rides(config, *, limit: int = 10) -> None:
         st.session_state.activity_stream_error = (
             None if rides else "No recent rides found for this athlete."
         )
-    except (StravaAuthError, StravaError) as exc:
+    except StravaAuthError as exc:
         st.session_state.recent_activities = []
         st.session_state._rides_token_fp = fp
-        st.session_state.activity_stream_error = str(exc)
-    except Exception as exc:  # noqa: BLE001
+        # Keep the short scope hint; never dump diagnostics / secrets paste text.
+        if getattr(exc, "kind", None) == "forbidden_scope":
+            st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
+        else:
+            st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
+    except StravaError:
         st.session_state.recent_activities = []
         st.session_state._rides_token_fp = fp
-        st.session_state.activity_stream_error = f"Could not list rides: {exc}"
+        st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
+    except Exception:  # noqa: BLE001
+        st.session_state.recent_activities = []
+        st.session_state._rides_token_fp = fp
+        st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
 
 
 def _load_ride_track(config, act: ActivitySummary) -> bool:
@@ -569,16 +642,18 @@ def _load_ride_track(config, act: ActivitySummary) -> bool:
     any key that is also a widget ``key=`` later in the script.
     """
     try:
-        route = _run_strava_call(
+        route = _run_activity_call(
             config,
             lambda c: c.load_activity_route(
                 act.activity_id, start_date=act.start_date
             ),
         )
-    except (StravaAuthError, StravaError) as exc:
-        st.session_state.activity_stream_error = (
-            f"Ride streams unavailable ({exc}). Check activity:read scope."
-        )
+    except StravaAuthError:
+        st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
+        st.session_state.activity_route = None
+        return False
+    except StravaError:
+        st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
         st.session_state.activity_route = None
         return False
     except Exception as exc:  # noqa: BLE001
@@ -598,22 +673,20 @@ def _fetch_activity_efforts(config, activity_id: int) -> None:
     if st.session_state.get("_efforts_activity_id") == activity_id:
         return
     try:
-        efforts = _run_strava_call(
+        efforts = _run_activity_call(
             config,
             lambda c: c.list_activity_segment_efforts(activity_id),
         )
         st.session_state.activity_efforts = efforts
         st.session_state._efforts_activity_id = activity_id
-    except (StravaAuthError, StravaError) as exc:
+    except (StravaAuthError, StravaError):
         st.session_state.activity_efforts = []
         st.session_state._efforts_activity_id = activity_id
-        st.session_state.activity_stream_error = (
-            f"Segment efforts unavailable ({exc})."
-        )
-    except Exception as exc:  # noqa: BLE001
+        st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
+    except Exception:  # noqa: BLE001
         st.session_state.activity_efforts = []
         st.session_state._efforts_activity_id = activity_id
-        st.session_state.activity_stream_error = f"Could not list segment efforts: {exc}"
+        st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
 
 
 def _load_effort_segment(config, effort: SegmentEffortSummary) -> bool:
@@ -880,18 +953,22 @@ def main() -> None:
         strava_cfg.client_id, strava_cfg.client_secret, strava_cfg.redirect_uri
     )
     connected = bool(st.session_state.get("strava_oauth_connected"))
+    activity_ok = _session_has_activity_read()
+    needs_activity_reconnect = connected and not activity_ok
 
     # Compact Connect / Disconnect — not a hero.
     conn_l, conn_r = st.columns([3, 2])
     with conn_l:
-        if connected:
+        if activity_ok:
             st.caption("Strava connected (this browser).")
+        elif needs_activity_reconnect:
+            st.caption(ACTIVITY_SCOPE_HINT)
         elif oauth_ok:
             st.caption("Optional: connect your Strava for personal rides.")
         else:
             st.caption("Strava connect needs client_id / secret in secrets.")
     with conn_r:
-        if connected:
+        if activity_ok:
             st.button(
                 "Disconnect",
                 on_click=_on_disconnect_strava,
@@ -908,6 +985,13 @@ def main() -> None:
                 auth_url,
                 use_container_width=True,
             )
+            if needs_activity_reconnect:
+                st.button(
+                    "Disconnect",
+                    on_click=_on_disconnect_strava,
+                    key="disconnect_strava_rescope",
+                    use_container_width=True,
+                )
     if st.session_state.get("strava_oauth_error"):
         st.error(st.session_state.strava_oauth_error)
 
@@ -957,11 +1041,12 @@ def main() -> None:
             st.caption(f"Using segment: **{m['name']}** · {m['segment_id']}")
 
         st.caption(
-            "Recent ride — your Strava if connected, else the app token. "
-            "Choosing a ride loads the track."
+            "Recent ride — Connect with Strava (allow activities) to load your track."
         )
-        if strava_ready:
+        if activity_ok:
             _ensure_recent_rides(strava_cfg, limit=10)
+        elif needs_activity_reconnect:
+            st.caption(ACTIVITY_SCOPE_HINT)
 
         activities: list[ActivitySummary] = list(
             st.session_state.get("recent_activities") or []
@@ -985,12 +1070,12 @@ def main() -> None:
         )
         if st.button(
             "List rides on date",
-            disabled=not strava_ready,
+            disabled=not activity_ok,
             use_container_width=True,
             key="list_rides_on_date",
         ):
             try:
-                day_acts = _run_strava_call(
+                day_acts = _run_activity_call(
                     strava_cfg,
                     lambda c: c.list_activities_on_date(ride_day),
                 )
@@ -1001,12 +1086,12 @@ def main() -> None:
                     if day_rides
                     else f"No rides on {ride_day.isoformat()}."
                 )
-            except (StravaAuthError, StravaError) as exc:
+            except (StravaAuthError, StravaError):
                 st.session_state.day_activities = []
-                st.session_state.activity_stream_error = str(exc)
-            except Exception as exc:  # noqa: BLE001
+                st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
+            except Exception:  # noqa: BLE001
                 st.session_state.day_activities = []
-                st.session_state.activity_stream_error = f"Could not list rides: {exc}"
+                st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
 
         day_activities: list[ActivitySummary] = list(
             st.session_state.get("day_activities") or []
