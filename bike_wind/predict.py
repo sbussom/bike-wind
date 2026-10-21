@@ -136,6 +136,108 @@ class PredictionResult:
         )
         return f"{spd_dir} · {self.weather_source} at {when_s}"
 
+    @property
+    def default_whatif_power_w(self) -> float:
+        """Flat power default: mean recorded watts, else sustained params power."""
+        if self.has_watts and self.watts is not None:
+            finite = [w for w in self.watts if math.isfinite(w) and w > 0.0]
+            if finite:
+                return sum(finite) / len(finite)
+        return float(self.params.power_w)
+
+    @property
+    def mean_wind_speed_mph(self) -> float:
+        return self.mean_wind_speed_mps * MPS_TO_MPH
+
+
+@dataclass(frozen=True)
+class WhatIfResult:
+    """Speeds/ETAs after power, wind-speed, and grade-scale what-if sliders."""
+
+    speeds_with_wind_mps: list[float]
+    speeds_no_wind_mps: list[float]
+    eta_with_wind_s: float
+    eta_no_wind_s: float
+    power_w: float
+    wind_speed_mps: float
+    wind_from_deg: float
+    grade_scale: float  # 1.0 = 100% of route grades
+
+    @property
+    def speeds_with_wind_mph(self) -> list[float]:
+        return [v * MPS_TO_MPH for v in self.speeds_with_wind_mps]
+
+    @property
+    def speeds_no_wind_mph(self) -> list[float]:
+        return [v * MPS_TO_MPH for v in self.speeds_no_wind_mps]
+
+    @property
+    def wind_speed_mph(self) -> float:
+        return self.wind_speed_mps * MPS_TO_MPH
+
+
+def apply_what_if(
+    result: PredictionResult,
+    *,
+    power_w: float,
+    wind_speed_mps: float,
+    grade_scale: float = 1.0,
+) -> WhatIfResult:
+    """Re-solve with flat power, scaled wind speed (same direction), scaled grades.
+
+    Does not use the recorded watts stream for the model — that stays on the
+    chart as the Power trace. Grade scale of 1.0 is the route as recorded.
+    """
+    n = len(result.grades)
+    scale_g = max(0.0, float(grade_scale))
+    grades = [g * scale_g for g in result.grades]
+
+    base_wind = max(0.0, float(result.mean_wind_speed_mps))
+    target_wind = max(0.0, float(wind_speed_mps))
+    if result.weather_ok and base_wind > 1e-6:
+        wind_scale = target_wind / base_wind
+        winds = [
+            WindComponents(
+                along_track=w.along_track * wind_scale,
+                cross_track=w.cross_track * wind_scale,
+            )
+            for w in result.winds
+        ]
+    elif result.weather_ok and target_wind <= 1e-6:
+        winds = [WindComponents()] * n
+    elif result.weather_ok:
+        # Forecast was calm; keep calm along-track structure (still zero).
+        winds = list(result.winds) if len(result.winds) == n else [WindComponents()] * n
+    else:
+        winds = [WindComponents()] * n
+
+    params = RiderBikeParams(
+        rider_mass_kg=result.params.rider_mass_kg,
+        power_w=max(1.0, float(power_w)),
+        bike_mass_kg=result.params.bike_mass_kg,
+        cd=result.params.cd,
+        area_m2=result.params.area_m2,
+        crr=result.params.crr,
+        rho=result.params.rho,
+        tuck_on_descent=result.params.tuck_on_descent,
+        drivetrain_efficiency=result.params.drivetrain_efficiency,
+    )
+    # Flat power only (no powers_w) for the what-if model.
+    speeds_calm = solve_speeds(params, grades)
+    speeds_wind = (
+        solve_speeds(params, grades, winds) if result.weather_ok else list(speeds_calm)
+    )
+    return WhatIfResult(
+        speeds_with_wind_mps=speeds_wind,
+        speeds_no_wind_mps=speeds_calm,
+        eta_with_wind_s=eta_seconds(result.distances_m, speeds_wind),
+        eta_no_wind_s=eta_seconds(result.distances_m, speeds_calm),
+        power_w=params.power_w,
+        wind_speed_mps=target_wind,
+        wind_from_deg=result.mean_wind_from_deg,
+        grade_scale=scale_g,
+    )
+
 
 def predict_speeds(
     route: RouteStreams,

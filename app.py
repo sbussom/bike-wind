@@ -8,14 +8,12 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import streamlit as st
 
-from streamlit_folium import st_folium
-
 from bike_wind.analysis import format_duration
 from bike_wind.gpx.parse import parse_gpx
-from bike_wind.map_view import MAP_MIN_HEIGHT_PX, build_wind_route_map
+from bike_wind.local_wind_map import compass_label, format_wind_speed_dir
 from bike_wind.physics.constants import DRIVETRAIN_EFFICIENCY
 from bike_wind.physics.forces import RiderBikeParams
-from bike_wind.predict import downsample_route, predict_speeds
+from bike_wind.predict import apply_what_if, downsample_route, predict_speeds
 from bike_wind.rider import (
     DEFAULT_POSITION_KEY,
     DEFAULT_RIDER_KG,
@@ -172,6 +170,32 @@ def _apply_theme(dark: bool) -> None:
           letter-spacing: 0.14em;
           color: var(--bw-accent);
           margin: 0 0 0.35rem 0;
+        }}
+        .bw-time-row {{
+          display: flex;
+          flex-wrap: wrap;
+          gap: 1.25rem 2rem;
+          margin: 0.15rem 0 0.85rem 0;
+          align-items: flex-end;
+        }}
+        .bw-time-block {{
+          min-width: 7.5rem;
+        }}
+        .bw-time-label {{
+          margin: 0;
+          font-size: 0.72rem;
+          text-transform: uppercase;
+          letter-spacing: 0.12em;
+          color: var(--bw-muted);
+        }}
+        .bw-time-value {{
+          margin: 0.15rem 0 0 0;
+          font-family: "Syne", sans-serif;
+          font-size: clamp(1.85rem, 5vw, 2.55rem);
+          line-height: 1.05;
+          font-weight: 700;
+          color: var(--bw-metric);
+          letter-spacing: -0.02em;
         }}
         div[data-testid="stMetricValue"] {{ color: var(--bw-metric); }}
         div[data-testid="stVerticalBlockBorderWrapper"] {{
@@ -895,36 +919,50 @@ def _validation_help_text(
     cda: float,
     surface_label: str,
     crr_note: str | None,
+    whatif_power_w: float,
+    whatif_wind_mph: float,
+    whatif_wind_from_deg: float,
+    whatif_grade_pct: float,
 ) -> str:
     """Plain-language parameter blurb for the validation chart popover."""
     p = result.params
-    grade = result.mean_grade_pct
-    eta_pct = (1.0 - p.drivetrain_efficiency) * 100.0
-    power_line = (
-        f"Power: recorded meter watts (mean ≈ {p.power_w:.0f} W crank)."
-        if result.power_source == "meter"
-        else f"Power: entered rider power {p.power_w:.0f} W (no power meter)."
-    )
     crr_line = f"Crr={p.crr:.4f} · {surface_label}."
     if crr_note:
         crr_line = f"{crr_line} {crr_note}"
+    wind_s = format_wind_speed_dir(
+        whatif_wind_mph / 2.236936,
+        whatif_wind_from_deg,
+        unit="mph",
+    )
     lines = [
-        power_line,
+        f"What-if power: {whatif_power_w:.0f} W flat (model).",
+        f"What-if wind: {wind_s}.",
+        f"Climb scale: {whatif_grade_pct:.0f}% of this route's grades.",
         f"System mass: {p.total_mass_kg:.1f} kg "
         f"(rider {p.rider_mass_kg:.1f} + bike {p.bike_mass_kg:.1f}).",
         f"Position: {position_label} · Cd·A={cda:.3f}.",
         crr_line,
-        f"Drivetrain: ~{eta_pct:.0f}% loss (efficiency {p.drivetrain_efficiency:.2f}).",
-        f"Air density ρ={result.rho_mean:.3f} kg/m³ from temp/pressure.",
-        f"Wind: {result.wind_label(unit='mph')}.",
-        f"Grade: elevation rise/run in the solver (mean |grade| ≈ {grade:.1f}%).",
-        "Model does not brake; it reacts to every grade change, so descents "
-        "spike higher than a real ride.",
-        "Units: speed mph (left), watts (right when recorded), distance miles.",
-        "Lines: teal = model with wind+grade; grey = recorded speed; "
-        "sand = power (second axis) when a watts stream exists.",
+        "Sand Power line = recorded watts; model uses the power slider.",
+        "Model does not brake; descents spike higher than a real ride.",
+        "Units: mph / miles (watts on the right when recorded).",
     ]
     return "\n".join(lines)
+
+
+def _sync_whatif_slider_defaults(result) -> None:
+    """Set what-if widget keys before those sliders are drawn (new Run only)."""
+    default_power = int(round(result.default_whatif_power_w))
+    default_wind = round(result.mean_wind_speed_mph, 1)
+    fp = (
+        f"{len(result.distances_m)}:{default_power}:{default_wind:.1f}:"
+        f"{result.mean_wind_from_deg:.1f}:{result.weather_source}"
+    )
+    if st.session_state.get("_whatif_fp") == fp:
+        return
+    st.session_state.whatif_power_w = max(80, min(450, default_power))
+    st.session_state.whatif_wind_mph = max(0.0, min(40.0, float(default_wind)))
+    st.session_state.whatif_grade_pct = 100
+    st.session_state._whatif_fp = fp
 
 
 def main() -> None:
@@ -1375,55 +1413,83 @@ def main() -> None:
             f"{POSITION_PRESETS[position_key_out].label} · Cd·A={cda_out:.3f} · "
             f"Crr={result.params.crr:.4f}"
         )
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Time (with wind)", format_duration(result.eta_with_wind_s))
-        m2.metric("Time (calm)", format_duration(result.eta_no_wind_s))
-        avg = (
-            sum(result.speeds_with_wind_mph) / len(result.speeds_with_wind_mph)
-            if result.speeds_with_wind_mph
+
+        # What-if defaults before slider widgets exist on this run.
+        _sync_whatif_slider_defaults(result)
+        wind_dir = compass_label(result.mean_wind_from_deg) if result.weather_ok else "—"
+        s1, s2, s3 = st.columns(3)
+        with s1:
+            whatif_power = st.slider(
+                "Power (W)",
+                min_value=80,
+                max_value=450,
+                step=5,
+                key="whatif_power_w",
+                help="Flat power for the what-if model. Recorded watts stay on the chart.",
+            )
+        with s2:
+            whatif_wind_mph = st.slider(
+                f"Wind (mph · {wind_dir})",
+                min_value=0.0,
+                max_value=40.0,
+                step=0.5,
+                key="whatif_wind_mph",
+                help="Scales forecast wind speed; direction stays the same.",
+            )
+        with s3:
+            whatif_grade_pct = st.slider(
+                "Climbs (% of route)",
+                min_value=0,
+                max_value=200,
+                step=5,
+                key="whatif_grade_pct",
+                help="Scales this route's grades (100% = as recorded).",
+            )
+
+        whatif = apply_what_if(
+            result,
+            power_w=float(whatif_power),
+            wind_speed_mps=float(whatif_wind_mph) / 2.236936,
+            grade_scale=float(whatif_grade_pct) / 100.0,
+        )
+
+        st.html(
+            f"""
+            <div class="bw-time-row">
+              <div class="bw-time-block">
+                <p class="bw-time-label">With wind</p>
+                <p class="bw-time-value">{format_duration(whatif.eta_with_wind_s)}</p>
+              </div>
+              <div class="bw-time-block">
+                <p class="bw-time-label">Calm</p>
+                <p class="bw-time-value">{format_duration(whatif.eta_no_wind_s)}</p>
+              </div>
+            </div>
+            """
+        )
+        avg_mph = (
+            sum(whatif.speeds_with_wind_mph) / len(whatif.speeds_with_wind_mph)
+            if whatif.speeds_with_wind_mph
             else 0.0
         )
-        m3.metric("Avg speed", f"{avg:.1f} mph")
         st.caption(
-            "Predicted times: with-wind (solid) vs calm (dashed). "
-            + result.wind_label(unit="mph")
+            f"Avg {avg_mph:.1f} mph · "
+            f"{format_wind_speed_dir(whatif.wind_speed_mps, whatif.wind_from_deg)} · "
+            f"climbs {whatif_grade_pct:.0f}%"
         )
-        if result.power_source == "entered":
-            st.caption(result.power_source_note)
-        elif result.weather_message and not result.weather_ok:
-            st.caption(result.weather_message)
 
-        try:
-            fmap = build_wind_route_map(
-                result.lats,
-                result.lons,
-                result.wind_along_mps,
-                dark=dark,
-                height_px=MAP_MIN_HEIGHT_PX,
-                weather_ok=result.weather_ok,
-            )
-            st_folium(
-                fmap,
-                width=None,
-                height=max(MAP_MIN_HEIGHT_PX, 320),
-                returned_objects=[],
-                use_container_width=True,
-            )
-        except Exception as exc:  # noqa: BLE001
-            st.caption(f"Route map unavailable: {exc}")
-
-        fig, ax = plt.subplots(figsize=(9, 3.4))
+        fig, ax = plt.subplots(figsize=(9, 3.2))
         bg, fg, accent = _style_speed_axes(ax, dark=dark, fig=fig)
         ax.plot(
             result.distances_mi,
-            result.speeds_no_wind_mph,
+            whatif.speeds_no_wind_mph,
             label="Calm",
             color="#8fa398",
             linestyle="--",
         )
         ax.plot(
             result.distances_mi,
-            result.speeds_with_wind_mph,
+            whatif.speeds_with_wind_mph,
             label="With wind",
             color=accent,
             linewidth=2,
@@ -1440,9 +1506,7 @@ def main() -> None:
         # --- Validation: actual vs model (same grey canvas) ---
         head_l, head_r = st.columns([5, 1])
         with head_l:
-            st.caption(
-                f"Validation · grade in model (mean |grade| ≈ {result.mean_grade_pct:.1f}%)"
-            )
+            st.caption("Model vs actual · sliders drive the teal model line")
         with head_r:
             with st.popover("Info"):
                 st.text(
@@ -1452,15 +1516,19 @@ def main() -> None:
                         cda=cda_out,
                         surface_label=surface_label_out,
                         crr_note=crr_note_out,
+                        whatif_power_w=float(whatif_power),
+                        whatif_wind_mph=float(whatif_wind_mph),
+                        whatif_wind_from_deg=whatif.wind_from_deg,
+                        whatif_grade_pct=float(whatif_grade_pct),
                     )
                 )
 
-        fig2, ax2 = plt.subplots(figsize=(9, 3.4))
+        fig2, ax2 = plt.subplots(figsize=(9, 3.2))
         bg2, fg2, accent2 = _style_speed_axes(ax2, dark=dark, fig=fig2)
         power_color = "#c4a574" if dark else "#8a6a3d"
         ax2.plot(
             result.distances_mi,
-            result.speeds_with_wind_mph,
+            whatif.speeds_with_wind_mph,
             label="Model",
             color=accent2,
             linewidth=2,
@@ -1494,11 +1562,6 @@ def main() -> None:
             h_w, l_w = ax_w.get_legend_handles_labels()
             handles2 = handles2 + h_w
             labels2 = labels2 + l_w
-        else:
-            st.caption("No power stream on this ride — Power line omitted.")
-        st.caption(
-            f"{result.power_source_note} · {result.wind_label(unit='mph')}"
-        )
         if result.distances_mi:
             ax2.set_xlim(result.distances_mi[0], result.distances_mi[-1])
         leg2 = ax2.legend(
