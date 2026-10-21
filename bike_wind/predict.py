@@ -51,6 +51,7 @@ class PredictionResult:
     mean_headwind_mps: float = 0.0
     mean_tailwind_mps: float = 0.0
     actual_speeds_mps: list[float] | None = None
+    watts: list[float] | None = None
     weather_when: datetime | None = None
     mean_grade_pct: float = 0.0
     used_ride_start_time: bool = False
@@ -101,6 +102,12 @@ class PredictionResult:
         ):
             return False
         return any(math.isfinite(v) for v in self.actual_speeds_mps)
+
+    @property
+    def has_watts(self) -> bool:
+        if not self.watts or len(self.watts) != len(self.distances_m):
+            return False
+        return any(math.isfinite(w) and w > 0.0 for w in self.watts)
 
     @property
     def eta_with_wind_s(self) -> float:
@@ -266,6 +273,7 @@ def predict_speeds(
 
     mean_along, mean_head, mean_tail = head_tail_summary(wind_along)
     actual = list(route.actual_speeds_mps) if route.has_actual_speeds else None
+    watts_out = list(route.watts) if route.has_watts and route.watts is not None else None
 
     return PredictionResult(
         distances_m=list(route.distances_m),
@@ -289,6 +297,7 @@ def predict_speeds(
         mean_headwind_mps=mean_head,
         mean_tailwind_mps=mean_tail,
         actual_speeds_mps=actual,
+        watts=watts_out,
         weather_when=weather_when,
         mean_grade_pct=route.mean_grade_pct(),
         used_ride_start_time=used_ride_start,

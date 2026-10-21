@@ -805,6 +805,16 @@ def _style_speed_axes(ax, *, dark: bool, fig) -> tuple[str, str, str]:
     return bg, fg, accent
 
 
+def _style_watts_axis(ax_w, *, dark: bool, color: str) -> None:
+    """Right-hand watts axis on the validation chart (same grey canvas)."""
+    _, _, _, spine = _chart_colors(dark)
+    ax_w.set_ylabel("watts", color=color)
+    ax_w.tick_params(axis="y", colors=color)
+    ax_w.spines["right"].set_color(spine)
+    ax_w.spines["top"].set_visible(False)
+    ax_w.set_facecolor("none")
+
+
 def _validation_help_text(
     result,
     *,
@@ -837,9 +847,9 @@ def _validation_help_text(
         f"Grade: elevation rise/run in the solver (mean |grade| ≈ {grade:.1f}%).",
         "Model does not brake; it reacts to every grade change, so descents "
         "spike higher than a real ride.",
-        "Units: speed mph, distance miles.",
-        "Lines: teal = model with wind+grade; grey = recorded speed "
-        "(velocity_smooth or time+distance).",
+        "Units: speed mph (left), watts (right when recorded), distance miles.",
+        "Lines: teal = model with wind+grade; grey = recorded speed; "
+        "sand = power (second axis) when a watts stream exists.",
     ]
     return "\n".join(lines)
 
@@ -1362,6 +1372,7 @@ def main() -> None:
 
         fig2, ax2 = plt.subplots(figsize=(9, 3.4))
         bg2, fg2, accent2 = _style_speed_axes(ax2, dark=dark, fig=fig2)
+        power_color = "#c4a574" if dark else "#8a6a3d"
         ax2.plot(
             result.distances_mi,
             result.speeds_with_wind_mph,
@@ -1383,12 +1394,34 @@ def main() -> None:
                 "Actual speed needs a GPX or Strava velocity_smooth / time+distance — "
                 "showing model only."
             )
+        handles2, labels2 = ax2.get_legend_handles_labels()
+        if result.has_watts and result.watts is not None:
+            ax_w = ax2.twinx()
+            _style_watts_axis(ax_w, dark=dark, color=power_color)
+            ax_w.plot(
+                result.distances_mi,
+                result.watts,
+                label="Power",
+                color=power_color,
+                linewidth=1.4,
+                alpha=0.9,
+            )
+            h_w, l_w = ax_w.get_legend_handles_labels()
+            handles2 = handles2 + h_w
+            labels2 = labels2 + l_w
+        else:
+            st.caption("No power stream on this ride — Power line omitted.")
         st.caption(
             f"{result.power_source_note} · {result.wind_label(unit='mph')}"
         )
         if result.distances_mi:
             ax2.set_xlim(result.distances_mi[0], result.distances_mi[-1])
-        leg2 = ax2.legend(facecolor=bg2, edgecolor="#3a4a42" if dark else "#c5d0ca")
+        leg2 = ax2.legend(
+            handles2,
+            labels2,
+            facecolor=bg2,
+            edgecolor="#3a4a42" if dark else "#c5d0ca",
+        )
         for text in leg2.get_texts():
             text.set_color(fg2)
         fig2.tight_layout()

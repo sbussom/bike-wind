@@ -209,6 +209,41 @@ def test_predict_uses_meter_watts(monkeypatch) -> None:
     result = predict_speeds(route, params, t0)
     assert result.power_source == "meter"
     assert "power-meter" in result.power_source_note
+    assert result.has_watts
+    assert result.watts == [100.0, 400.0, 100.0]
     # Middle point at 400 W should be faster than neighbors at 100 W (flatish).
     assert result.speeds_with_wind_mps[1] > result.speeds_with_wind_mps[0]
     assert result.speeds_with_wind_mps[1] > result.speeds_with_wind_mps[2]
+
+
+def test_predict_without_watts_has_no_power_series(monkeypatch) -> None:
+    route = parse_gpx(TIMED_GPX.encode())
+
+    def fake_wx(lats, lons, bearings, when, **kwargs):
+        from bike_wind.weather.fetch import WeatherFetchResult
+        from bike_wind.weather.open_meteo import ForecastPoint
+
+        n = len(lats)
+        pts = [
+            ForecastPoint(
+                lat=lats[i],
+                lon=lons[i],
+                temperature_c=25.0,
+                pressure_hpa=1013.0,
+                u10_mps=0.0,
+                v10_mps=0.0,
+                u_rider_mps=0.0,
+                v_rider_mps=0.0,
+                rho=1.2,
+                along_track_mps=0.0,
+                cross_track_mps=0.0,
+            )
+            for i in range(n)
+        ]
+        return WeatherFetchResult(points=pts, source="open-meteo-15min")
+
+    monkeypatch.setattr("bike_wind.predict.fetch_weather_along_route", fake_wx)
+    params = RiderBikeParams(rider_mass_kg=69.0, power_w=200.0)
+    result = predict_speeds(route, params, route.start_time)  # type: ignore[arg-type]
+    assert not result.has_watts
+    assert result.watts is None
