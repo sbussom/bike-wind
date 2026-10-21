@@ -143,6 +143,14 @@ def test_solve_speeds_length() -> None:
     assert all(s >= 0 for s in speeds)
 
 
+def test_solve_speeds_variable_power() -> None:
+    p = _flat_params(power_w=150.0)
+    grades = [0.0, 0.0, 0.0]
+    speeds = solve_speeds(p, grades, powers_w=[100.0, 300.0, 100.0])
+    assert speeds[1] > speeds[0]
+    assert speeds[1] > speeds[2]
+
+
 def test_log_profile_reduces_10m_wind() -> None:
     u10 = 10.0
     u12 = correct_wind_speed(u10, z_ref_m=10.0, z_m=1.2, z0_m=0.03)

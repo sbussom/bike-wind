@@ -38,6 +38,7 @@ class RouteStreams:
     distances_m: list[float]
     times_utc: list[datetime] | None = None
     actual_speeds_mps: list[float] | None = None
+    watts: list[float] | None = None
 
     def __len__(self) -> int:
         return len(self.lats)
@@ -59,7 +60,17 @@ class RouteStreams:
 
     @property
     def has_actual_speeds(self) -> bool:
-        return bool(self.actual_speeds_mps) and len(self.actual_speeds_mps) == len(self)
+        """True when a speed sample exists for every point (NaN gaps allowed)."""
+        if not self.actual_speeds_mps or len(self.actual_speeds_mps) != len(self):
+            return False
+        return any(math.isfinite(v) for v in self.actual_speeds_mps)
+
+    @property
+    def has_watts(self) -> bool:
+        """True when power-meter watts align with the route (NaN gaps allowed)."""
+        if not self.watts or len(self.watts) != len(self):
+            return False
+        return any(math.isfinite(w) and w > 0.0 for w in self.watts)
 
     @property
     def points(self) -> list[RoutePoint]:

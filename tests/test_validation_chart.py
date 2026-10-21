@@ -58,10 +58,12 @@ def test_downsample_keeps_actual_speeds() -> None:
         distances_m=[float(i * 10) for i in range(n)],
         times_utc=[t0 + timedelta(seconds=i) for i in range(n)],
         actual_speeds_mps=[10.0] * n,
+        watts=[200.0] * n,
     )
     thin = downsample_route(route, max_points=10)
     assert len(thin) <= 10
     assert thin.has_actual_speeds
+    assert thin.has_watts
     assert thin.start_time == t0
 
 
@@ -161,3 +163,52 @@ def test_predict_uses_ride_start_and_grade(monkeypatch) -> None:
     assert result.has_actual_speeds
     assert result.mean_grade_pct > 0.0
     assert len(result.grades) == len(route)
+    assert result.power_source == "entered"
+    assert "mph from the" in result.wind_label(unit="mph")
+    assert result.speeds_with_wind_mph
+    assert abs(result.speeds_with_wind_mph[0] - result.speeds_with_wind_mps[0] * 2.236936) < 1e-6
+
+
+def test_predict_uses_meter_watts(monkeypatch) -> None:
+    t0 = datetime(2024, 6, 1, 14, 0, tzinfo=timezone.utc)
+    route = RouteStreams(
+        lats=[26.12, 26.121, 26.122],
+        lons=[-80.137, -80.137, -80.137],
+        elevs_m=[2.0, 4.0, 6.0],
+        distances_m=[0.0, 100.0, 200.0],
+        times_utc=[t0, t0 + timedelta(seconds=30), t0 + timedelta(seconds=60)],
+        actual_speeds_mps=[3.3, 3.4, 3.3],
+        watts=[100.0, 400.0, 100.0],
+    )
+
+    def fake_wx(lats, lons, bearings, when, **kwargs):
+        from bike_wind.weather.fetch import WeatherFetchResult
+        from bike_wind.weather.open_meteo import ForecastPoint
+
+        n = len(lats)
+        pts = [
+            ForecastPoint(
+                lat=lats[i],
+                lon=lons[i],
+                temperature_c=25.0,
+                pressure_hpa=1013.0,
+                u10_mps=0.0,
+                v10_mps=0.0,
+                u_rider_mps=0.0,
+                v_rider_mps=0.0,
+                rho=1.2,
+                along_track_mps=0.0,
+                cross_track_mps=0.0,
+            )
+            for i in range(n)
+        ]
+        return WeatherFetchResult(points=pts, source="open-meteo-15min")
+
+    monkeypatch.setattr("bike_wind.predict.fetch_weather_along_route", fake_wx)
+    params = RiderBikeParams(rider_mass_kg=75.0, power_w=200.0)
+    result = predict_speeds(route, params, t0)
+    assert result.power_source == "meter"
+    assert "power-meter" in result.power_source_note
+    # Middle point at 400 W should be faster than neighbors at 100 W (flatish).
+    assert result.speeds_with_wind_mps[1] > result.speeds_with_wind_mps[0]
+    assert result.speeds_with_wind_mps[1] > result.speeds_with_wind_mps[2]

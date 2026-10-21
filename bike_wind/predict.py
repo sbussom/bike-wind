@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Sequence
@@ -17,11 +18,14 @@ from bike_wind.analysis import (
     time_uncertainty_band,
 )
 from bike_wind.gpx.parse import RouteStreams
+from bike_wind.local_wind_map import format_wind_speed_dir, wind_from_uv
 from bike_wind.physics.constants import RIDER_HEIGHT_M
 from bike_wind.physics.forces import RiderBikeParams, WindComponents
 from bike_wind.physics.solver import solve_speeds
 from bike_wind.weather.fetch import fetch_weather_along_route
 from bike_wind.weather.open_meteo import WeatherFetchError
+
+MPS_TO_MPH = 2.236936
 
 
 @dataclass
@@ -50,6 +54,9 @@ class PredictionResult:
     weather_when: datetime | None = None
     mean_grade_pct: float = 0.0
     used_ride_start_time: bool = False
+    power_source: str = "entered"  # "meter" | "entered"
+    mean_wind_speed_mps: float = 0.0
+    mean_wind_from_deg: float = 0.0
 
     @property
     def distances_km(self) -> list[float]:
@@ -64,16 +71,32 @@ class PredictionResult:
         return [v * 3.6 for v in self.speeds_no_wind_mps]
 
     @property
+    def speeds_with_wind_mph(self) -> list[float]:
+        return [v * MPS_TO_MPH for v in self.speeds_with_wind_mps]
+
+    @property
+    def speeds_no_wind_mph(self) -> list[float]:
+        return [v * MPS_TO_MPH for v in self.speeds_no_wind_mps]
+
+    @property
     def actual_speeds_kmh(self) -> list[float] | None:
         if not self.actual_speeds_mps:
             return None
         return [v * 3.6 for v in self.actual_speeds_mps]
 
     @property
+    def actual_speeds_mph(self) -> list[float] | None:
+        if not self.actual_speeds_mps:
+            return None
+        return [v * MPS_TO_MPH for v in self.actual_speeds_mps]
+
+    @property
     def has_actual_speeds(self) -> bool:
-        return bool(self.actual_speeds_mps) and len(self.actual_speeds_mps) == len(
+        if not self.actual_speeds_mps or len(self.actual_speeds_mps) != len(
             self.distances_m
-        )
+        ):
+            return False
+        return any(math.isfinite(v) for v in self.actual_speeds_mps)
 
     @property
     def eta_with_wind_s(self) -> float:
@@ -82,6 +105,25 @@ class PredictionResult:
     @property
     def eta_no_wind_s(self) -> float:
         return eta_seconds(self.distances_m, self.speeds_no_wind_mps)
+
+    @property
+    def power_source_note(self) -> str:
+        if self.power_source == "meter":
+            return "Model uses recorded power-meter watts along the route."
+        return "Model uses entered rider power (no power meter on this ride)."
+
+    def wind_label(self, *, unit: str = "mph") -> str:
+        """Source, time, and speed+direction used for the with-wind case."""
+        when = self.weather_when
+        when_s = when.strftime("%Y-%m-%d %H:%M UTC") if when else "—"
+        if not self.weather_ok:
+            return f"Wind unavailable · calm prediction only ({when_s})"
+        spd_dir = format_wind_speed_dir(
+            self.mean_wind_speed_mps,
+            self.mean_wind_from_deg,
+            unit=unit,
+        )
+        return f"{spd_dir} · {self.weather_source} at {when_s}"
 
 
 def predict_speeds(
@@ -101,7 +143,8 @@ def predict_speeds(
     Grade (rise/run from elevation) is always passed into the ground-speed
     solver. When the route has a recorded start time and
     ``prefer_ride_start_time`` is True, weather is fetched for that instant
-    instead of ``when``.
+    instead of ``when``. When the route has power-meter ``watts``, those drive
+    the model; otherwise ``params.power_w`` is used.
     """
     grades = route.grades()
     bearings = route.bearings_deg()
@@ -111,7 +154,25 @@ def predict_speeds(
         weather_when = route.start_time
         used_ride_start = True
 
-    speeds_calm = solve_speeds(params, grades)
+    powers_w: list[float] | None = None
+    power_source = "entered"
+    if route.has_watts and route.watts is not None:
+        powers_w = list(route.watts)
+        power_source = "meter"
+        finite = [w for w in powers_w if math.isfinite(w) and w > 0.0]
+        if finite:
+            params = RiderBikeParams(
+                rider_mass_kg=params.rider_mass_kg,
+                power_w=sum(finite) / len(finite),
+                bike_mass_kg=params.bike_mass_kg,
+                cd=params.cd,
+                area_m2=params.area_m2,
+                crr=params.crr,
+                rho=params.rho,
+                tuck_on_descent=params.tuck_on_descent,
+            )
+
+    speeds_calm = solve_speeds(params, grades, powers_w=powers_w)
 
     wind_along = [0.0] * len(route)
     wind_cross = [0.0] * len(route)
@@ -122,6 +183,8 @@ def predict_speeds(
     weather_source = "none"
     speeds_wind = list(speeds_calm)
     params_used = params
+    mean_wind_speed = 0.0
+    mean_wind_from = 0.0
 
     try:
         wx = fetch_weather_along_route(
@@ -153,8 +216,12 @@ def predict_speeds(
             tuck_on_descent=params.tuck_on_descent,
         )
         # Grade from elevation is required input to the speed solver.
-        speeds_wind = solve_speeds(params_used, grades, winds)
+        speeds_wind = solve_speeds(params_used, grades, winds, powers_w=powers_w)
         weather_ok = True
+        if forecast:
+            u_mean = sum(fp.u_rider_mps for fp in forecast) / len(forecast)
+            v_mean = sum(fp.v_rider_mps for fp in forecast) / len(forecast)
+            mean_wind_speed, mean_wind_from = wind_from_uv(u_mean, v_mean)
     except WeatherFetchError as exc:
         weather_message = (
             f"Weather unavailable ({exc}). Showing calm-air prediction only — "
@@ -219,6 +286,9 @@ def predict_speeds(
         weather_when=weather_when,
         mean_grade_pct=route.mean_grade_pct(),
         used_ride_start_time=used_ride_start,
+        power_source=power_source,
+        mean_wind_speed_mps=mean_wind_speed,
+        mean_wind_from_deg=mean_wind_from,
     )
 
 
@@ -237,6 +307,9 @@ def downsample_route(route: RouteStreams, max_points: int = 400) -> RouteStreams
         if route.actual_speeds_mps is not None
         else None
     )
+    watts = (
+        [route.watts[i] for i in idxs] if route.watts is not None else None
+    )
     return RouteStreams(
         lats=[route.lats[i] for i in idxs],
         lons=[route.lons[i] for i in idxs],
@@ -244,4 +317,5 @@ def downsample_route(route: RouteStreams, max_points: int = 400) -> RouteStreams
         distances_m=[route.distances_m[i] for i in idxs],
         times_utc=times,
         actual_speeds_mps=speeds,
+        watts=watts,
     )

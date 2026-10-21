@@ -469,6 +469,9 @@ def test_load_activity_route_absolute_times(tmp_path: Path) -> None:
     )
     assert len(route) == 3
     assert route.has_actual_speeds
+    assert route.has_watts
+    assert route.watts == [180.0, 190.0, 200.0]
+    assert route.actual_speeds_mps == [3.2, 3.4, 3.3]
     assert route.start_time is not None
     assert route.start_time.year == 2024
     assert route.start_time.hour == 14

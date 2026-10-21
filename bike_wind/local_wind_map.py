@@ -138,3 +138,28 @@ def compass_label(direction_deg: float) -> str:
     ]
     idx = int((direction_deg % 360) / 22.5 + 0.5) % 16
     return dirs[idx]
+
+
+def wind_from_uv(u_mps: float, v_mps: float) -> tuple[float, float]:
+    """Meteorological wind (speed_mps, from_direction_deg) from u/v components."""
+    import math
+
+    speed = math.hypot(u_mps, v_mps)
+    direction = (math.degrees(math.atan2(-u_mps, -v_mps)) + 360.0) % 360.0
+    return speed, direction
+
+
+def format_wind_speed_dir(
+    speed_mps: float,
+    direction_deg: float,
+    *,
+    unit: str = "mph",
+) -> str:
+    """Human label like ``12 mph from the ENE``."""
+    if unit == "mph":
+        speed = speed_mps * 2.236936
+        unit_s = "mph"
+    else:
+        speed = speed_mps * 3.6
+        unit_s = "km/h"
+    return f"{speed:.0f} {unit_s} from the {compass_label(direction_deg)}"

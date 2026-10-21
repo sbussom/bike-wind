@@ -250,6 +250,8 @@ def _init_state() -> None:
         st.session_state.activity_efforts = []
     if "selected_effort" not in st.session_state:
         st.session_state.selected_effort = None
+    if "effort_route" not in st.session_state:
+        st.session_state.effort_route = None
     if "activity_stream_error" not in st.session_state:
         st.session_state.activity_stream_error = None
     if "_rides_token_fp" not in st.session_state:
@@ -495,6 +497,7 @@ def _select_strava_segment(
     st.session_state.selected_activity = None
     st.session_state.selected_effort = None
     st.session_state.activity_route = None
+    st.session_state.effort_route = None
     st.session_state.activity_efforts = []
     st.session_state._efforts_activity_id = None
     st.session_state.activity_stream_error = None
@@ -505,6 +508,7 @@ def _select_strava_activity(act: ActivitySummary) -> None:
     prev_id = getattr(st.session_state.get("selected_activity"), "activity_id", None)
     st.session_state.selected_activity = act
     st.session_state.selected_effort = None
+    st.session_state.effort_route = None
     st.session_state.route_source = "activity"
     st.session_state.activity_stream_error = None
     if prev_id != act.activity_id:
@@ -604,33 +608,56 @@ def _fetch_activity_efforts(config, activity_id: int) -> None:
 
 
 def _load_effort_segment(config, effort: SegmentEffortSummary) -> bool:
-    """Load segment GPS for an effort; actual speed from effort elapsed time."""
-    from bike_wind.strava.client import route_with_effort_actuals
+    """Slice the activity streams to the effort window (speed + watts).
+
+    Uses ``start_index``/``end_index`` on the ride's recorded streams — never a
+    flat elapsed/distance average. Keeps the full ``activity_route`` intact.
+    """
+    from bike_wind.strava.client import slice_route_for_effort
+
+    if not effort.has_stream_indices:
+        st.session_state.activity_stream_error = (
+            "This segment effort has no stream indices from Strava."
+        )
+        return False
+
+    route = st.session_state.get("activity_route")
+    act = st.session_state.get("selected_activity")
+    # If activity_route was replaced somehow, reload the full ride first.
+    need_reload = (
+        route is None
+        or len(route) < 2
+        or (effort.end_index is not None and len(route) <= effort.end_index)
+    )
+    if need_reload and act is not None:
+        if not _load_ride_track(config, act):
+            return False
+        route = st.session_state.get("activity_route")
+    if route is None or len(route) < 2:
+        st.session_state.activity_stream_error = (
+            "Load the ride track before picking a segment effort."
+        )
+        return False
 
     try:
-        meta, route = _run_strava_call(
-            config,
-            lambda c: c.load_segment_route(effort.segment_id),
-        )
-        enriched = route_with_effort_actuals(route, effort)
-    except (StravaAuthError, StravaError) as exc:
-        st.session_state.activity_stream_error = (
-            f"Segment streams unavailable ({exc})."
-        )
+        sliced = slice_route_for_effort(route, effort)
+    except ValueError as exc:
+        st.session_state.activity_stream_error = str(exc)
         return False
     except Exception as exc:  # noqa: BLE001
-        st.session_state.activity_stream_error = f"Could not load segment: {exc}"
+        st.session_state.activity_stream_error = f"Could not slice effort: {exc}"
         return False
+
     st.session_state.selected_effort = effort
     st.session_state.route_source = "effort"
-    st.session_state.activity_route = enriched
+    st.session_state.effort_route = sliced
     st.session_state.strava_segment_id = effort.segment_id
     st.session_state.strava_meta = {
-        "segment_id": meta.segment_id,
-        "name": meta.name,
-        "distance_m": meta.distance_m,
-        "average_grade": meta.average_grade,
-        "from_cache": meta.from_cache,
+        "segment_id": effort.segment_id,
+        "name": effort.name,
+        "distance_m": effort.distance_m,
+        "average_grade": 0.0,
+        "from_cache": False,
     }
     st.session_state.activity_stream_error = None
     if effort.average_watts is not None and effort.average_watts > 0:
@@ -761,7 +788,7 @@ def _style_speed_axes(ax, *, dark: bool, fig) -> tuple[str, str, str]:
     fig.patch.set_facecolor(bg)
     ax.set_facecolor(bg)
     ax.set_xlabel("Distance (km)", color=fg)
-    ax.set_ylabel("km/h", color=fg)
+    ax.set_ylabel("mph", color=fg)
     ax.tick_params(colors=fg)
     for sp in ax.spines.values():
         sp.set_color(spine)
@@ -772,19 +799,22 @@ def _style_speed_axes(ax, *, dark: bool, fig) -> tuple[str, str, str]:
 def _validation_help_text(result, *, position_label: str, cda: float) -> str:
     """Plain-language parameter blurb for the validation chart popover."""
     p = result.params
-    when = result.weather_when
-    when_s = when.strftime("%Y-%m-%d %H:%M UTC") if when else "—"
-    wx = result.weather_source if result.weather_ok else "unavailable (calm)"
     grade = result.mean_grade_pct
+    power_line = (
+        f"Power: recorded meter watts (mean ≈ {p.power_w:.0f} W)."
+        if result.power_source == "meter"
+        else f"Power: entered rider power {p.power_w:.0f} W (no power meter)."
+    )
     lines = [
-        f"Power: {p.power_w:.0f} W sustained.",
+        power_line,
         f"Mass: {p.total_mass_kg:.1f} kg rider+bike.",
         f"Position: {position_label} · Cd·A={cda:.3f}.",
         f"Rolling resistance Crr={p.crr:.4f}.",
         f"Air density ρ={result.rho_mean:.3f} kg/m³ from temp/pressure.",
-        f"Wind: {wx} at {when_s}.",
+        f"Wind: {result.wind_label(unit='mph')}.",
         f"Grade: elevation rise/run in the solver (mean |grade| ≈ {grade:.1f}%).",
-        "Lines: teal = model with wind+grade; grey = actual ride speed when timed data exists.",
+        "Units: speed in mph.",
+        "Lines: teal = model with wind+grade; grey = recorded speed (velocity_smooth or time+distance).",
     ]
     return "\n".join(lines)
 
@@ -1105,7 +1135,7 @@ def main() -> None:
         try:
             if use_effort and strava_ready:
                 effort: SegmentEffortSummary = st.session_state.selected_effort
-                route = st.session_state.get("activity_route")
+                route = st.session_state.get("effort_route")
                 if route is None or len(route) < 2:
                     if not _load_effort_segment(strava_cfg, effort):
                         st.error(
@@ -1113,7 +1143,7 @@ def main() -> None:
                             or "Segment streams unavailable."
                         )
                         return
-                    route = st.session_state.activity_route
+                    route = st.session_state.effort_route
                 source_label = f"Strava segment: {effort.name}"
             elif use_activity and strava_ready:
                 act: ActivitySummary = st.session_state.selected_activity
@@ -1198,16 +1228,18 @@ def main() -> None:
         m1.metric("Time (with wind)", format_duration(result.eta_with_wind_s))
         m2.metric("Time (calm)", format_duration(result.eta_no_wind_s))
         avg = (
-            sum(result.speeds_with_wind_kmh) / len(result.speeds_with_wind_kmh)
-            if result.speeds_with_wind_kmh
+            sum(result.speeds_with_wind_mph) / len(result.speeds_with_wind_mph)
+            if result.speeds_with_wind_mph
             else 0.0
         )
-        m3.metric("Avg speed", f"{avg:.1f} km/h")
-        if result.weather_ok:
-            st.caption(
-                f"{result.weather_source} · along-track {result.mean_wind_along_mps:+.1f} m/s"
-            )
-        elif result.weather_message:
+        m3.metric("Avg speed", f"{avg:.1f} mph")
+        st.caption(
+            "Predicted times: with-wind (solid) vs calm (dashed). "
+            + result.wind_label(unit="mph")
+        )
+        if result.power_source == "entered":
+            st.caption(result.power_source_note)
+        elif result.weather_message and not result.weather_ok:
             st.caption(result.weather_message)
 
         try:
@@ -1233,18 +1265,20 @@ def main() -> None:
         bg, fg, accent = _style_speed_axes(ax, dark=dark, fig=fig)
         ax.plot(
             result.distances_km,
-            result.speeds_no_wind_kmh,
+            result.speeds_no_wind_mph,
             label="Calm",
             color="#8fa398",
             linestyle="--",
         )
         ax.plot(
             result.distances_km,
-            result.speeds_with_wind_kmh,
+            result.speeds_with_wind_mph,
             label="With wind",
             color=accent,
             linewidth=2,
         )
+        if result.distances_km:
+            ax.set_xlim(result.distances_km[0], result.distances_km[-1])
         legend = ax.legend(facecolor=bg, edgecolor="#3a4a42" if dark else "#c5d0ca")
         for text in legend.get_texts():
             text.set_color(fg)
@@ -1272,15 +1306,15 @@ def main() -> None:
         bg2, fg2, accent2 = _style_speed_axes(ax2, dark=dark, fig=fig2)
         ax2.plot(
             result.distances_km,
-            result.speeds_with_wind_kmh,
+            result.speeds_with_wind_mph,
             label="Model",
             color=accent2,
             linewidth=2,
         )
-        if result.has_actual_speeds and result.actual_speeds_kmh is not None:
+        if result.has_actual_speeds and result.actual_speeds_mph is not None:
             ax2.plot(
                 result.distances_km,
-                result.actual_speeds_kmh,
+                result.actual_speeds_mph,
                 label="Actual",
                 color="#8fa398",
                 linewidth=1.8,
@@ -1288,14 +1322,14 @@ def main() -> None:
             )
         else:
             st.caption(
-                "Actual speed needs a GPX (or Strava stream) with timestamps or speed — "
+                "Actual speed needs a GPX or Strava velocity_smooth / time+distance — "
                 "showing model only."
             )
-        if result.used_ride_start_time and result.weather_when is not None:
-            st.caption(
-                f"Wind from ride start {result.weather_when.strftime('%Y-%m-%d %H:%M UTC')} "
-                f"({result.weather_source})."
-            )
+        st.caption(
+            f"{result.power_source_note} · {result.wind_label(unit='mph')}"
+        )
+        if result.distances_km:
+            ax2.set_xlim(result.distances_km[0], result.distances_km[-1])
         leg2 = ax2.legend(facecolor=bg2, edgecolor="#3a4a42" if dark else "#c5d0ca")
         for text in leg2.get_texts():
             text.set_color(fg2)

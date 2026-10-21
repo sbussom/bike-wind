@@ -37,6 +37,8 @@ class SegmentEffortSummary:
     moving_time_s: int
     start_date: str  # ISO UTC
     average_watts: float | None = None
+    start_index: int | None = None
+    end_index: int | None = None
 
     @property
     def average_speed_mps(self) -> float | None:
@@ -45,6 +47,14 @@ class SegmentEffortSummary:
         if t <= 0 or self.distance_m <= 0:
             return None
         return self.distance_m / float(t)
+
+    @property
+    def has_stream_indices(self) -> bool:
+        return (
+            self.start_index is not None
+            and self.end_index is not None
+            and self.end_index > self.start_index
+        )
 
     def label(self) -> str:
         km = self.distance_m / 1000.0

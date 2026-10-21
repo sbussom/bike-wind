@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -481,6 +482,8 @@ class StravaClient:
                 or seg_id
             )
             watts = item.get("average_watts")
+            start_idx = item.get("start_index")
+            end_idx = item.get("end_index")
             out.append(
                 SegmentEffortSummary(
                     effort_id=int(item["id"]),
@@ -491,6 +494,8 @@ class StravaClient:
                     moving_time_s=int(item.get("moving_time") or 0),
                     start_date=str(item.get("start_date") or ""),
                     average_watts=float(watts) if watts is not None else None,
+                    start_index=int(start_idx) if start_idx is not None else None,
+                    end_index=int(end_idx) if end_idx is not None else None,
                 )
             )
         return out
@@ -553,8 +558,7 @@ class StravaClient:
             altitudes = data.get("altitude", {}).get("data") or []
             times_raw = data.get("time", {}).get("data") or []
             vel_raw = data.get("velocity_smooth", {}).get("data") or []
-            # watts requested for activities; unused in RouteStreams (avg on summary).
-            _ = data.get("watts", {}).get("data") or []
+            watts_raw = data.get("watts", {}).get("data") or []
         elif isinstance(data, list):
             by_type = {item.get("type"): item.get("data") for item in data}
             latlng = by_type.get("latlng") or []
@@ -562,7 +566,7 @@ class StravaClient:
             altitudes = by_type.get("altitude") or []
             times_raw = by_type.get("time") or []
             vel_raw = by_type.get("velocity_smooth") or []
-            _ = by_type.get("watts") or []
+            watts_raw = by_type.get("watts") or []
         else:
             raise StravaError("Unexpected streams response shape")
 
@@ -584,7 +588,14 @@ class StravaClient:
         times_utc = None
         actual_speeds = None
         if len(vel_raw) == n:
-            actual_speeds = [max(0.0, float(v)) for v in vel_raw]
+            # Missing samples → NaN (skip in charts); never invent a constant.
+            actual_speeds = [_stream_speed_mps(v) for v in vel_raw]
+
+        watts: list[float] | None = None
+        if len(watts_raw) == n:
+            watts = [_stream_watts(w) for w in watts_raw]
+            if not any(math.isfinite(w) and w > 0.0 for w in watts):
+                watts = None
 
         if len(times_raw) == n:
             start_utc = _parse_activity_start(start_date)
@@ -606,6 +617,7 @@ class StravaClient:
             distances_m=dists,
             times_utc=times_utc,
             actual_speeds_mps=actual_speeds,
+            watts=watts,
         )
 
     def _format_diag(self, **extra: Any) -> str:
@@ -789,11 +801,66 @@ def _parse_activity_start(start_date: str | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+def slice_route_for_effort(
+    route: RouteStreams,
+    effort: SegmentEffortSummary,
+) -> RouteStreams:
+    """Slice activity streams to the effort window using start_index/end_index.
+
+    Keeps recorded ``velocity_smooth`` / derived speeds and watts along the
+    segment — never a flat elapsed/distance average. Distances are rebased to
+    start at 0 so charts cover the full effort.
+    """
+    if not effort.has_stream_indices:
+        raise ValueError("Segment effort is missing start_index/end_index")
+    n = len(route)
+    if n < 2:
+        raise ValueError("Activity route too short to slice")
+    assert effort.start_index is not None and effort.end_index is not None
+    i0 = max(0, int(effort.start_index))
+    i1 = min(n - 1, int(effort.end_index))
+    if i1 <= i0:
+        raise ValueError(
+            f"Invalid effort index range [{effort.start_index}, {effort.end_index}]"
+        )
+    sl = slice(i0, i1 + 1)
+    dists_raw = list(route.distances_m[sl])
+    d0 = dists_raw[0] if dists_raw else 0.0
+    dists = [d - d0 for d in dists_raw]
+    times = list(route.times_utc[sl]) if route.times_utc is not None else None
+    speeds = (
+        list(route.actual_speeds_mps[sl])
+        if route.actual_speeds_mps is not None
+        else None
+    )
+    watts = list(route.watts[sl]) if route.watts is not None else None
+    return RouteStreams(
+        lats=list(route.lats[sl]),
+        lons=list(route.lons[sl]),
+        elevs_m=list(route.elevs_m[sl]),
+        distances_m=dists,
+        times_utc=times,
+        actual_speeds_mps=speeds,
+        watts=watts,
+    )
+
+
 def route_with_effort_actuals(
     route: RouteStreams,
     effort: SegmentEffortSummary,
 ) -> RouteStreams:
-    """Copy segment geometry and attach effort start time + average actual speed."""
+    """Slice activity streams for an effort (preferred) or legacy constant fallback.
+
+    Prefer ``slice_route_for_effort`` when the effort has stream indices. The
+    constant-speed path remains only for callers without indices (tests/legacy).
+    """
+    if (
+        effort.has_stream_indices
+        and effort.end_index is not None
+        and len(route) > effort.end_index
+    ):
+        return slice_route_for_effort(route, effort)
+
     from datetime import timedelta
 
     n = len(route)
@@ -819,6 +886,7 @@ def route_with_effort_actuals(
         distances_m=list(route.distances_m),
         times_utc=times_utc,
         actual_speeds_mps=speeds,
+        watts=list(route.watts) if route.watts is not None else None,
     )
 
 
@@ -829,6 +897,32 @@ def _opt_float(val: Any) -> float | None:
         return float(val)
     except (TypeError, ValueError):
         return None
+
+
+def _stream_speed_mps(val: Any) -> float:
+    """Parse a velocity_smooth sample; missing → NaN (do not invent a constant)."""
+    if val is None:
+        return float("nan")
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return float("nan")
+    if not math.isfinite(v) or v < 0.0:
+        return float("nan")
+    return v
+
+
+def _stream_watts(val: Any) -> float:
+    """Parse a watts sample; missing → NaN."""
+    if val is None:
+        return float("nan")
+    try:
+        w = float(val)
+    except (TypeError, ValueError):
+        return float("nan")
+    if not math.isfinite(w):
+        return float("nan")
+    return w
 
 
 def _cumulative_haversine(lats: list[float], lons: list[float]) -> list[float]:

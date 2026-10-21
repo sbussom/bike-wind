@@ -30,3 +30,14 @@ def test_compass_label_cardinals() -> None:
     assert compass_label(90) == "E"
     assert compass_label(180) == "S"
     assert compass_label(270) == "W"
+
+
+def test_wind_from_uv_and_format() -> None:
+    from bike_wind.local_wind_map import format_wind_speed_dir, wind_from_uv
+
+    # Pure eastward u → wind from the west
+    speed, direction = wind_from_uv(5.0, 0.0)
+    assert abs(speed - 5.0) < 1e-9
+    assert abs(direction - 270.0) < 1e-6
+    label = format_wind_speed_dir(5.364, 90.0, unit="mph")  # ~12 mph from E
+    assert "mph from the E" in label
