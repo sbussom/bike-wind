@@ -184,10 +184,16 @@ def test_inertia_power_step_approaches_equilibrium() -> None:
     grades = [0.0] * n
     step_at = 10
     powers = [150.0] * step_at + [300.0] * (n - step_at)
-    speeds = solve_speeds(p, grades, powers_w=powers, distances_m=distances)
-
+    # Seed near the low-power cruise so the step lag is measurable.
     v_lo = solve_speed(_flat_params(power_w=150.0), grade=0.0)
     v_hi = solve_speed(_flat_params(power_w=300.0), grade=0.0)
+    speeds = solve_speeds(
+        p,
+        grades,
+        powers_w=powers,
+        distances_m=distances,
+        initial_speed_mps=v_lo,
+    )
     assert v_hi > v_lo
 
     # First sample after the step: still closer to the old equilibrium.
@@ -199,6 +205,27 @@ def test_inertia_power_step_approaches_equilibrium() -> None:
     assert speeds[-1] > v_just_after
     assert abs(speeds[-1] - v_hi) < abs(v_just_after - v_hi)
     assert speeds[-1] > 0.5 * (v_lo + v_hi)
+
+
+def test_zero_watts_coasts_not_default_power() -> None:
+    """Recorded 0 W must coast; must not substitute sustained params.power_w."""
+    p = _flat_params(power_w=250.0)
+    n = 20
+    distances = [float(i * 10) for i in range(n)]
+    grades = [0.0] * n
+    # Cruise then explicit zeros (coasting).
+    powers = [250.0] * 5 + [0.0] * (n - 5)
+    v0 = solve_speed(_flat_params(power_w=250.0), grade=0.0)
+    speeds = solve_speeds(
+        p,
+        grades,
+        powers_w=powers,
+        distances_m=distances,
+        initial_speed_mps=v0,
+    )
+    # After several zero-watt samples, speed must drop well below cruise.
+    assert speeds[-1] < v0 * 0.7
+    assert speeds[-1] < speeds[4]
 
 
 def test_log_profile_reduces_10m_wind() -> None:

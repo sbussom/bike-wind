@@ -36,7 +36,7 @@ def test_position_presets_match_spec() -> None:
     assert POSITION_PRESETS["hoods"].cd == 0.95
     assert POSITION_PRESETS["hoods"].area_m2 == 0.42
     assert POSITION_PRESETS["gravel_hoods"].cd == 1.0
-    assert POSITION_PRESETS["gravel_hoods"].area_m2 == 0.45
+    assert POSITION_PRESETS["gravel_hoods"].area_m2 == 0.408
     assert POSITION_PRESETS["gravel_hoods"].bike_mass_kg == BIKE_MASS_GRAVEL_KG
     assert POSITION_PRESETS["upright"].cd == 1.1
     assert POSITION_PRESETS["upright"].area_m2 == 0.50
@@ -58,7 +58,7 @@ def test_gravel_cda_higher_than_road_drops() -> None:
     drops = resolve_aero("drops")
     gravel = resolve_aero("gravel_hoods")
     assert gravel.cda > drops.cda
-    assert gravel.cda == pytest.approx(0.45)
+    assert gravel.cda == pytest.approx(0.408)
     assert gravel.bike_mass_kg == BIKE_MASS_GRAVEL_KG
 
 

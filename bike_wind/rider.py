@@ -69,9 +69,11 @@ POSITION_PRESETS: dict[str, PositionPreset] = {
     "gravel_hoods": PositionPreset(
         key="gravel_hoods",
         label="Gravel hoods",
-        # Wider bars / tires / upright hoods than road drops → higher Cd·A.
+        # Wider bars / tires / upright hoods than road drops.
+        # Cd·A 0.408 matches myWindsock estimate on the user's beach/island
+        # rides; 0.45 was systematically ~0.5–1 mph slow after zero-watt fix.
         cd=1.0,
-        area_m2=0.45,
+        area_m2=0.408,
         bike_mass_kg=BIKE_MASS_GRAVEL_KG,
     ),
     "upright": PositionPreset(

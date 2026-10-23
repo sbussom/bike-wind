@@ -72,6 +72,8 @@ def solve_speeds(
     winds: Sequence[WindComponents] | None = None,
     powers_w: Sequence[float] | None = None,
     distances_m: Sequence[float] | None = None,
+    *,
+    initial_speed_mps: float | None = None,
 ) -> list[float]:
     """Ground speed at each sample (m/s).
 
@@ -79,6 +81,14 @@ def solve_speeds(
     ``a = F_net / m`` from power, aero, rolling, and grade — speed approaches
     the steady-state value instead of jumping to it. Without distances, each
     sample is solved at equilibrium (legacy / unit helpers).
+
+    ``powers_w``: finite values are used as-is, including **0 W coasting**.
+    Non-finite samples fall back to ``params.power_w``. (A previous bug treated
+    0 W as missing and substituted the default sustained watts.)
+
+    ``initial_speed_mps``: optional start state for inertia (e.g. recorded speed
+    at the first sample on a known effort). When omitted, starts at the first
+    sample's steady-state speed.
     """
     n = len(grades)
     if winds is None:
@@ -98,7 +108,13 @@ def solve_speeds(
             for pp, g, w in zip(point_params, grades, winds)
         ]
 
-    return _integrate_speeds(point_params, grades, winds, distances_m)
+    return _integrate_speeds(
+        point_params,
+        grades,
+        winds,
+        distances_m,
+        initial_speed_mps=initial_speed_mps,
+    )
 
 
 def _point_params(
@@ -110,22 +126,24 @@ def _point_params(
         return [params] * n
     out: list[RiderBikeParams] = []
     for pw in powers_w:
-        if math.isfinite(pw) and pw > 0.0:
-            out.append(
-                RiderBikeParams(
-                    rider_mass_kg=params.rider_mass_kg,
-                    power_w=float(pw),
-                    bike_mass_kg=params.bike_mass_kg,
-                    cd=params.cd,
-                    area_m2=params.area_m2,
-                    crr=params.crr,
-                    rho=params.rho,
-                    tuck_on_descent=params.tuck_on_descent,
-                    drivetrain_efficiency=params.drivetrain_efficiency,
-                )
-            )
+        if math.isfinite(pw) and pw >= 0.0:
+            # Explicit 0 W = coast / stop. Do not substitute sustained watts.
+            power = float(pw)
         else:
-            out.append(params)
+            power = float(params.power_w)
+        out.append(
+            RiderBikeParams(
+                rider_mass_kg=params.rider_mass_kg,
+                power_w=power,
+                bike_mass_kg=params.bike_mass_kg,
+                cd=params.cd,
+                area_m2=params.area_m2,
+                crr=params.crr,
+                rho=params.rho,
+                tuck_on_descent=params.tuck_on_descent,
+                drivetrain_efficiency=params.drivetrain_efficiency,
+            )
+        )
     return out
 
 
@@ -134,14 +152,23 @@ def _integrate_speeds(
     grades: Sequence[float],
     winds: Sequence[WindComponents],
     distances_m: Sequence[float],
+    *,
+    initial_speed_mps: float | None = None,
 ) -> list[float]:
     """Euler integration: dv/dt = F_net/m along successive distance samples."""
     n = len(grades)
     speeds = [0.0] * n
-    speeds[0] = solve_speed(point_params[0], grade=grades[0], wind=winds[0])
-    if speeds[0] < _V_MIN_MPS:
-        # Still try to move if power exists; floor keeps F = P/v finite.
-        speeds[0] = _V_MIN_MPS if point_params[0].power_w > 0.0 else 0.0
+    if (
+        initial_speed_mps is not None
+        and math.isfinite(initial_speed_mps)
+        and initial_speed_mps >= 0.0
+    ):
+        # Known effort: use the recorded start speed as the integrator state.
+        speeds[0] = min(_V_MAX_MPS, float(initial_speed_mps))
+    else:
+        speeds[0] = solve_speed(point_params[0], grade=grades[0], wind=winds[0])
+        if speeds[0] < _V_MIN_MPS:
+            speeds[0] = _V_MIN_MPS if point_params[0].power_w > 0.0 else 0.0
 
     for i in range(n - 1):
         dd = float(distances_m[i + 1]) - float(distances_m[i])

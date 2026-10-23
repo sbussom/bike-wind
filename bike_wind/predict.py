@@ -160,6 +160,16 @@ class PredictionResult:
         return dt if dt > 0 else None
 
 
+def _initial_speed_mps(actual_speeds_mps: list[float] | None) -> float | None:
+    """First finite recorded speed as the inertia integrator's initial state."""
+    if not actual_speeds_mps:
+        return None
+    for v in actual_speeds_mps:
+        if math.isfinite(v) and v >= 0.0:
+            return float(v)
+    return None
+
+
 def power_series_3s(
     watts: Sequence[float],
     times_utc: Sequence[datetime] | None = None,
@@ -306,8 +316,13 @@ def apply_what_if(
         tuck_on_descent=result.params.tuck_on_descent,
         drivetrain_efficiency=result.params.drivetrain_efficiency,
     )
+    v0 = _initial_speed_mps(result.actual_speeds_mps)
     speeds_calm = solve_speeds(
-        params, grades, powers_w=powers_w, distances_m=result.distances_m
+        params,
+        grades,
+        powers_w=powers_w,
+        distances_m=result.distances_m,
+        initial_speed_mps=v0,
     )
     speeds_wind = (
         solve_speeds(
@@ -316,6 +331,7 @@ def apply_what_if(
             winds,
             powers_w=powers_w,
             distances_m=result.distances_m,
+            initial_speed_mps=v0,
         )
         if result.weather_ok
         else list(speeds_calm)
@@ -382,8 +398,15 @@ def predict_speeds(
                 drivetrain_efficiency=params.drivetrain_efficiency,
             )
 
+    v0 = _initial_speed_mps(
+        list(route.actual_speeds_mps) if route.has_actual_speeds else None
+    )
     speeds_calm = solve_speeds(
-        params, grades, powers_w=powers_w, distances_m=route.distances_m
+        params,
+        grades,
+        powers_w=powers_w,
+        distances_m=route.distances_m,
+        initial_speed_mps=v0,
     )
 
     wind_along = [0.0] * len(route)
@@ -435,6 +458,7 @@ def predict_speeds(
             winds,
             powers_w=powers_w,
             distances_m=route.distances_m,
+            initial_speed_mps=v0,
         )
         weather_ok = True
         if forecast:
