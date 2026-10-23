@@ -144,6 +144,7 @@ def solve_speeds_for_power(
     base: RiderBikeParams,
     grades: Sequence[float],
     winds: Sequence[WindComponents],
+    distances_m: Sequence[float] | None = None,
 ) -> list[float]:
     params = RiderBikeParams(
         rider_mass_kg=base.rider_mass_kg,
@@ -156,7 +157,7 @@ def solve_speeds_for_power(
         tuck_on_descent=base.tuck_on_descent,
         drivetrain_efficiency=base.drivetrain_efficiency,
     )
-    return solve_speeds(params, grades, winds)
+    return solve_speeds(params, grades, winds, distances_m=distances_m)
 
 
 def power_for_target_time(
@@ -177,7 +178,9 @@ def power_for_target_time(
         raise ValueError("target_time_s must be positive")
 
     def eta_at(power: float) -> float:
-        speeds = solve_speeds_for_power(power, params, grades, winds)
+        speeds = solve_speeds_for_power(
+            power, params, grades, winds, distances_m=distances_m
+        )
         return eta_seconds(distances_m, speeds)
 
     eta_hi = eta_at(p_max)  # more power → lower ETA
@@ -273,7 +276,7 @@ def time_uncertainty_band(
     horizon = forecast_horizon_days(when, now=now)
     delta = wind_along_uncertainty_mps(horizon)
 
-    speeds_nom = solve_speeds(params, grades, winds)
+    speeds_nom = solve_speeds(params, grades, winds, distances_m=distances_m)
     eta = eta_seconds(distances_m, speeds_nom)
 
     # Favorable: add delta to along-track (more tail / less head)
@@ -286,8 +289,12 @@ def time_uncertainty_band(
         WindComponents(along_track=w.along_track - delta, cross_track=w.cross_track)
         for w in winds
     ]
-    eta_fast = eta_seconds(distances_m, solve_speeds(params, grades, winds_fast))
-    eta_slow = eta_seconds(distances_m, solve_speeds(params, grades, winds_slow))
+    eta_fast = eta_seconds(
+        distances_m, solve_speeds(params, grades, winds_fast, distances_m=distances_m)
+    )
+    eta_slow = eta_seconds(
+        distances_m, solve_speeds(params, grades, winds_slow, distances_m=distances_m)
+    )
 
     note = (
         f"Horizon {horizon:.1f} d → ±{delta:.2f} m/s along-track wind "

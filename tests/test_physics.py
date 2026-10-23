@@ -175,6 +175,32 @@ def test_solve_speeds_variable_power() -> None:
     assert speeds[1] > speeds[2]
 
 
+def test_inertia_power_step_approaches_equilibrium() -> None:
+    """A power step must not jump to the new eq on the next sample."""
+    p = _flat_params(power_w=150.0)
+    # Flat course, 5 m samples — long enough to see a lag, short of full settle.
+    n = 41
+    distances = [float(i * 5) for i in range(n)]
+    grades = [0.0] * n
+    step_at = 10
+    powers = [150.0] * step_at + [300.0] * (n - step_at)
+    speeds = solve_speeds(p, grades, powers_w=powers, distances_m=distances)
+
+    v_lo = solve_speed(_flat_params(power_w=150.0), grade=0.0)
+    v_hi = solve_speed(_flat_params(power_w=300.0), grade=0.0)
+    assert v_hi > v_lo
+
+    # First sample after the step: still closer to the old equilibrium.
+    v_just_after = speeds[step_at]
+    assert v_just_after < 0.5 * (v_lo + v_hi)
+    assert v_just_after < v_hi * 0.92
+
+    # Far downstream: nearer the high-power equilibrium than right after the step.
+    assert speeds[-1] > v_just_after
+    assert abs(speeds[-1] - v_hi) < abs(v_just_after - v_hi)
+    assert speeds[-1] > 0.5 * (v_lo + v_hi)
+
+
 def test_log_profile_reduces_10m_wind() -> None:
     u10 = 10.0
     u12 = correct_wind_speed(u10, z_ref_m=10.0, z_m=1.2, z0_m=0.03)

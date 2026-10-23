@@ -306,9 +306,17 @@ def apply_what_if(
         tuck_on_descent=result.params.tuck_on_descent,
         drivetrain_efficiency=result.params.drivetrain_efficiency,
     )
-    speeds_calm = solve_speeds(params, grades, powers_w=powers_w)
+    speeds_calm = solve_speeds(
+        params, grades, powers_w=powers_w, distances_m=result.distances_m
+    )
     speeds_wind = (
-        solve_speeds(params, grades, winds, powers_w=powers_w)
+        solve_speeds(
+            params,
+            grades,
+            winds,
+            powers_w=powers_w,
+            distances_m=result.distances_m,
+        )
         if result.weather_ok
         else list(speeds_calm)
     )
@@ -374,7 +382,9 @@ def predict_speeds(
                 drivetrain_efficiency=params.drivetrain_efficiency,
             )
 
-    speeds_calm = solve_speeds(params, grades, powers_w=powers_w)
+    speeds_calm = solve_speeds(
+        params, grades, powers_w=powers_w, distances_m=route.distances_m
+    )
 
     wind_along = [0.0] * len(route)
     wind_cross = [0.0] * len(route)
@@ -418,8 +428,14 @@ def predict_speeds(
             tuck_on_descent=params.tuck_on_descent,
             drivetrain_efficiency=params.drivetrain_efficiency,
         )
-        # Grade from elevation is required input to the speed solver.
-        speeds_wind = solve_speeds(params_used, grades, winds, powers_w=powers_w)
+        # Grade from smoothed elevation; inertia-limited along distance.
+        speeds_wind = solve_speeds(
+            params_used,
+            grades,
+            winds,
+            powers_w=powers_w,
+            distances_m=route.distances_m,
+        )
         weather_ok = True
         if forecast:
             u_mean = sum(fp.u_rider_mps for fp in forecast) / len(forecast)

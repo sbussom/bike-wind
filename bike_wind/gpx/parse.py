@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, TextIO, Union
+from typing import BinaryIO, Sequence, TextIO, Union
 
 GPX_NS = {"gpx": "http://www.topografix.com/GPX/1/1"}
 # Some files omit the default namespace or use 1.0
@@ -18,6 +18,44 @@ GPX_NS_CANDIDATES = (
 )
 
 Source = Union[str, Path, bytes, BinaryIO, TextIO]
+
+# Distance window for elevation smoothing before grade (GPS blip filter).
+ELEV_SMOOTH_WINDOW_M = 35.0
+
+
+def smooth_elevations(
+    elevs_m: Sequence[float],
+    distances_m: Sequence[float],
+    *,
+    window_m: float = ELEV_SMOOTH_WINDOW_M,
+) -> list[float]:
+    """Centered distance-box mean of elevation (meters).
+
+    A ~20–50 m window kills single-sample GPS altitude spikes without
+    flattening real climbs. ``window_m <= 0`` returns a copy unchanged.
+    """
+    n = len(elevs_m)
+    if n != len(distances_m):
+        raise ValueError("elevs_m and distances_m must have the same length")
+    if n == 0 or window_m <= 0.0:
+        return [float(e) for e in elevs_m]
+
+    half = float(window_m) * 0.5
+    out = [0.0] * n
+    j_lo = 0
+    j_hi = 0
+    total = 0.0
+    for i in range(n):
+        d0 = distances_m[i]
+        while j_hi < n and distances_m[j_hi] <= d0 + half:
+            total += float(elevs_m[j_hi])
+            j_hi += 1
+        while j_lo < j_hi and distances_m[j_lo] < d0 - half:
+            total -= float(elevs_m[j_lo])
+            j_lo += 1
+        count = j_hi - j_lo
+        out[i] = total / count if count > 0 else float(elevs_m[i])
+    return out
 
 
 @dataclass(frozen=True)
@@ -81,15 +119,22 @@ class RouteStreams:
             )
         ]
 
-    def grades(self) -> list[float]:
-        """Segment grades (rise/run) between consecutive points; last repeats prior."""
+    def grades(self, *, elev_smooth_m: float = ELEV_SMOOTH_WINDOW_M) -> list[float]:
+        """Segment grades (rise/run) between consecutive points; last repeats prior.
+
+        Elevations are smoothed over ``elev_smooth_m`` before differencing so a
+        GPS altitude blip does not spike predicted speed. Pass ``0`` to disable.
+        """
         n = len(self)
         if n < 2:
             return [0.0] * n
+        elevs = smooth_elevations(
+            self.elevs_m, self.distances_m, window_m=elev_smooth_m
+        )
         out: list[float] = []
         for i in range(n - 1):
             dd = self.distances_m[i + 1] - self.distances_m[i]
-            de = self.elevs_m[i + 1] - self.elevs_m[i]
+            de = elevs[i + 1] - elevs[i]
             if dd <= 0.0:
                 out.append(0.0)
             else:
