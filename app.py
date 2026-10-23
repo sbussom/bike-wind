@@ -902,14 +902,11 @@ def _style_speed_axes(ax, *, dark: bool, fig) -> tuple[str, str, str]:
     return bg, fg, accent
 
 
-def _style_watts_axis(ax_w, *, dark: bool, color: str) -> None:
-    """Right-hand watts axis on the validation chart (same grey canvas)."""
-    _, _, _, spine = _chart_colors(dark)
-    ax_w.set_ylabel("watts", color=color)
-    ax_w.tick_params(axis="y", colors=color)
-    ax_w.spines["right"].set_color(spine)
-    ax_w.spines["top"].set_visible(False)
-    ax_w.set_facecolor("none")
+def _style_power_axes(ax, *, dark: bool, fig) -> tuple[str, str, str]:
+    """Distance (mi) × watts chart styling (same grey canvas as speed)."""
+    bg, fg, accent = _style_speed_axes(ax, dark=dark, fig=fig)
+    ax.set_ylabel("watts", color=fg)
+    return bg, fg, accent
 
 
 def _validation_help_text(
@@ -919,12 +916,13 @@ def _validation_help_text(
     cda: float,
     surface_label: str,
     crr_note: str | None,
+    power_mode_label: str,
     whatif_power_w: float,
     whatif_wind_mph: float,
     whatif_wind_from_deg: float,
     whatif_grade_pct: float,
 ) -> str:
-    """Plain-language parameter blurb for the validation chart popover."""
+    """Plain-language parameter blurb for the results charts popover."""
     p = result.params
     crr_line = f"Crr={p.crr:.4f} · {surface_label}."
     if crr_note:
@@ -934,34 +932,52 @@ def _validation_help_text(
         whatif_wind_from_deg,
         unit="mph",
     )
+    window = result.power_window_s
+    if result.has_watts and window:
+        power_trace = f"Power chart: recorded watts with {window:.0f}s rolling mean."
+    elif result.has_watts:
+        power_trace = "Power chart: recorded effort watts (already ~3s average)."
+    else:
+        power_trace = "No recorded power on this ride — model uses flat watts."
     lines = [
-        f"What-if power: {whatif_power_w:.0f} W flat (model).",
+        f"Power mode: {power_mode_label}.",
+        f"Flat slider watts (what-if): {whatif_power_w:.0f} W.",
         f"What-if wind: {wind_s}.",
         f"Climb scale: {whatif_grade_pct:.0f}% of this route's grades.",
         f"System mass: {p.total_mass_kg:.1f} kg "
         f"(rider {p.rider_mass_kg:.1f} + bike {p.bike_mass_kg:.1f}).",
         f"Position: {position_label} · Cd·A={cda:.3f}.",
         crr_line,
-        "Sand Power line = recorded watts; model uses the power slider.",
+        power_trace,
+        "Predicted speed uses that power series (or flat slider) + grade + wind.",
         "Model does not brake; descents spike higher than a real ride.",
-        "Units: mph / miles (watts on the right when recorded).",
+        "Units: mph / miles; watts on the power chart.",
     ]
     return "\n".join(lines)
 
 
+_POWER_MODE_RECORDED = "Recorded effort"
+_POWER_MODE_FLAT = "Flat slider watts"
+
+
 def _sync_whatif_slider_defaults(result) -> None:
-    """Set what-if widget keys before those sliders are drawn (new Run only)."""
+    """Set what-if widget keys before those widgets are drawn (new Run only)."""
     default_power = int(round(result.default_whatif_power_w))
     default_wind = round(result.mean_wind_speed_mph, 1)
+    default_mode = (
+        _POWER_MODE_RECORDED if result.has_watts else _POWER_MODE_FLAT
+    )
     fp = (
         f"{len(result.distances_m)}:{default_power}:{default_wind:.1f}:"
-        f"{result.mean_wind_from_deg:.1f}:{result.weather_source}"
+        f"{result.mean_wind_from_deg:.1f}:{result.weather_source}:"
+        f"{int(result.has_watts)}"
     )
     if st.session_state.get("_whatif_fp") == fp:
         return
     st.session_state.whatif_power_w = max(80, min(450, default_power))
     st.session_state.whatif_wind_mph = max(0.0, min(40.0, float(default_wind)))
     st.session_state.whatif_grade_pct = 100
+    st.session_state.whatif_power_mode = default_mode
     st.session_state._whatif_fp = fp
 
 
@@ -1414,9 +1430,25 @@ def main() -> None:
             f"Crr={result.params.crr:.4f}"
         )
 
-        # What-if defaults before slider widgets exist on this run.
+        # What-if defaults before widgets exist on this run.
         _sync_whatif_slider_defaults(result)
         wind_dir = compass_label(result.mean_wind_from_deg) if result.weather_ok else "—"
+
+        if result.has_watts:
+            power_mode = st.radio(
+                "Power source",
+                options=[_POWER_MODE_RECORDED, _POWER_MODE_FLAT],
+                horizontal=True,
+                key="whatif_power_mode",
+                help=(
+                    "Default: solve each point from the recorded effort power. "
+                    "Switch to flat slider watts for what-if."
+                ),
+            )
+        else:
+            power_mode = _POWER_MODE_FLAT
+            st.caption("No recorded power — model uses flat slider watts.")
+
         s1, s2, s3 = st.columns(3)
         with s1:
             whatif_power = st.slider(
@@ -1425,7 +1457,10 @@ def main() -> None:
                 max_value=450,
                 step=5,
                 key="whatif_power_w",
-                help="Flat power for the what-if model. Recorded watts stay on the chart.",
+                help=(
+                    "Flat watts for what-if mode. Ignored while Power source is "
+                    "Recorded effort (mean shown as caption only)."
+                ),
             )
         with s2:
             whatif_wind_mph = st.slider(
@@ -1446,67 +1481,60 @@ def main() -> None:
                 help="Scales this route's grades (100% = as recorded).",
             )
 
+        use_recorded = power_mode == _POWER_MODE_RECORDED and result.has_watts
         whatif = apply_what_if(
             result,
             power_w=float(whatif_power),
             wind_speed_mps=float(whatif_wind_mph) / 2.236936,
             grade_scale=float(whatif_grade_pct) / 100.0,
+            use_recorded_power=use_recorded,
         )
 
+        actual_s = result.actual_elapsed_s
+        actual_html = (
+            f"""
+              <div class="bw-time-block">
+                <p class="bw-time-label">Actual</p>
+                <p class="bw-time-value">{format_duration(actual_s)}</p>
+              </div>
+            """
+            if actual_s is not None
+            else """
+              <div class="bw-time-block">
+                <p class="bw-time-label">Actual</p>
+                <p class="bw-time-value">—</p>
+              </div>
+            """
+        )
         st.html(
             f"""
             <div class="bw-time-row">
               <div class="bw-time-block">
-                <p class="bw-time-label">With wind</p>
+                <p class="bw-time-label">Predicted</p>
                 <p class="bw-time-value">{format_duration(whatif.eta_with_wind_s)}</p>
               </div>
-              <div class="bw-time-block">
-                <p class="bw-time-label">Calm</p>
-                <p class="bw-time-value">{format_duration(whatif.eta_no_wind_s)}</p>
-              </div>
+              {actual_html}
             </div>
             """
         )
-        avg_mph = (
-            sum(whatif.speeds_with_wind_mph) / len(whatif.speeds_with_wind_mph)
-            if whatif.speeds_with_wind_mph
-            else 0.0
-        )
+        if whatif.used_recorded_power:
+            power_caption = (
+                f"Power source: recorded effort (mean {whatif.power_w:.0f} W)"
+            )
+            if result.power_window_s:
+                power_caption += f" · {result.power_window_s:.0f}s rolling mean"
+        else:
+            power_caption = f"Power source: flat slider ({whatif.power_w:.0f} W)"
         st.caption(
-            f"Avg {avg_mph:.1f} mph · "
+            f"{power_caption} · "
             f"{format_wind_speed_dir(whatif.wind_speed_mps, whatif.wind_from_deg)} · "
-            f"climbs {whatif_grade_pct:.0f}%"
+            f"climbs {whatif_grade_pct:.0f}% · "
+            f"calm {format_duration(whatif.eta_no_wind_s)}"
         )
 
-        fig, ax = plt.subplots(figsize=(9, 3.2))
-        bg, fg, accent = _style_speed_axes(ax, dark=dark, fig=fig)
-        ax.plot(
-            result.distances_mi,
-            whatif.speeds_no_wind_mph,
-            label="Calm",
-            color="#8fa398",
-            linestyle="--",
-        )
-        ax.plot(
-            result.distances_mi,
-            whatif.speeds_with_wind_mph,
-            label="With wind",
-            color=accent,
-            linewidth=2,
-        )
-        if result.distances_mi:
-            ax.set_xlim(result.distances_mi[0], result.distances_mi[-1])
-        legend = ax.legend(facecolor=bg, edgecolor="#3a4a42" if dark else "#c5d0ca")
-        for text in legend.get_texts():
-            text.set_color(fg)
-        fig.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
-
-        # --- Validation: actual vs model (same grey canvas) ---
         head_l, head_r = st.columns([5, 1])
         with head_l:
-            st.caption("Model vs actual · sliders drive the teal model line")
+            st.caption("Power file used · then predicted vs actual speed")
         with head_r:
             with st.popover("Info"):
                 st.text(
@@ -1516,6 +1544,7 @@ def main() -> None:
                         cda=cda_out,
                         surface_label=surface_label_out,
                         crr_note=crr_note_out,
+                        power_mode_label=power_mode,
                         whatif_power_w=float(whatif_power),
                         whatif_wind_mph=float(whatif_wind_mph),
                         whatif_wind_from_deg=whatif.wind_from_deg,
@@ -1523,13 +1552,54 @@ def main() -> None:
                     )
                 )
 
+        # --- Graph 1: power vs distance (watts used by the model) ---
+        power_color = "#c4a574" if dark else "#8a6a3d"
+        fig_p, ax_p = plt.subplots(figsize=(9, 2.8))
+        bg_p, fg_p, _accent_p = _style_power_axes(ax_p, dark=dark, fig=fig_p)
+        plot_powers = whatif.powers_w if whatif.powers_w is not None else result.watts
+        if plot_powers is not None and result.has_watts:
+            ax_p.plot(
+                result.distances_mi,
+                plot_powers,
+                label="Power",
+                color=power_color,
+                linewidth=1.6,
+            )
+        elif not use_recorded:
+            ax_p.axhline(
+                whatif.power_w,
+                color=power_color,
+                linewidth=1.8,
+                label=f"Flat {whatif.power_w:.0f} W",
+            )
+        else:
+            ax_p.text(
+                0.5,
+                0.5,
+                "No recorded power",
+                transform=ax_p.transAxes,
+                ha="center",
+                va="center",
+                color=fg_p,
+            )
+        if result.distances_mi:
+            ax_p.set_xlim(result.distances_mi[0], result.distances_mi[-1])
+        leg_p = ax_p.legend(
+            facecolor=bg_p, edgecolor="#3a4a42" if dark else "#c5d0ca"
+        )
+        for text in leg_p.get_texts():
+            text.set_color(fg_p)
+        fig_p.tight_layout()
+        st.pyplot(fig_p)
+        plt.close(fig_p)
+
+        # --- Graph 2: predicted vs actual speed (mph) ---
         fig2, ax2 = plt.subplots(figsize=(9, 3.2))
         bg2, fg2, accent2 = _style_speed_axes(ax2, dark=dark, fig=fig2)
-        power_color = "#c4a574" if dark else "#8a6a3d"
         ax2.plot(
             result.distances_mi,
             whatif.speeds_with_wind_mph,
-            label="Model",
+            label="Predicted",
             color=accent2,
             linewidth=2,
         )
@@ -1545,28 +1615,11 @@ def main() -> None:
         else:
             st.caption(
                 "Actual speed needs a GPX or Strava velocity_smooth / time+distance — "
-                "showing model only."
+                "showing predicted only."
             )
-        handles2, labels2 = ax2.get_legend_handles_labels()
-        if result.has_watts and result.watts is not None:
-            ax_w = ax2.twinx()
-            _style_watts_axis(ax_w, dark=dark, color=power_color)
-            ax_w.plot(
-                result.distances_mi,
-                result.watts,
-                label="Power",
-                color=power_color,
-                linewidth=1.4,
-                alpha=0.9,
-            )
-            h_w, l_w = ax_w.get_legend_handles_labels()
-            handles2 = handles2 + h_w
-            labels2 = labels2 + l_w
         if result.distances_mi:
             ax2.set_xlim(result.distances_mi[0], result.distances_mi[-1])
         leg2 = ax2.legend(
-            handles2,
-            labels2,
             facecolor=bg2,
             edgecolor="#3a4a42" if dark else "#c5d0ca",
         )

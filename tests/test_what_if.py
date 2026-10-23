@@ -82,3 +82,22 @@ def test_what_if_uses_flat_power_not_watt_stream() -> None:
     wi = apply_what_if(result, power_w=200.0, wind_speed_mps=0.0, grade_scale=0.0)
     # Flat power + flat grade → nearly uniform speeds
     assert max(wi.speeds_no_wind_mps) - min(wi.speeds_no_wind_mps) < 0.5
+    assert not wi.used_recorded_power
+
+
+def test_what_if_recorded_power_mode() -> None:
+    result = _base_result()
+    result.watts = [50.0, 500.0, 50.0, 50.0]
+    result.grades = [0.0, 0.0, 0.0, 0.0]
+    flat = apply_what_if(
+        result, power_w=200.0, wind_speed_mps=0.0, grade_scale=0.0
+    )
+    recorded = apply_what_if(
+        result,
+        power_w=200.0,
+        wind_speed_mps=0.0,
+        grade_scale=0.0,
+        use_recorded_power=True,
+    )
+    assert recorded.used_recorded_power
+    assert recorded.speeds_no_wind_mps[1] > flat.speeds_no_wind_mps[1]

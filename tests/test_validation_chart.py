@@ -211,6 +211,8 @@ def test_predict_uses_meter_watts(monkeypatch) -> None:
     assert "power-meter" in result.power_source_note
     assert result.has_watts
     assert result.watts == [100.0, 400.0, 100.0]
+    # 30 s samples → already ~3s-or-slower; no extra roll.
+    assert result.power_window_s is None
     # Middle point at 400 W should be faster than neighbors at 100 W (flatish).
     assert result.speeds_with_wind_mps[1] > result.speeds_with_wind_mps[0]
     assert result.speeds_with_wind_mps[1] > result.speeds_with_wind_mps[2]

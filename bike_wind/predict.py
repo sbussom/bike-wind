@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Sequence
 
 from bike_wind.analysis import (
@@ -51,13 +51,15 @@ class PredictionResult:
     mean_headwind_mps: float = 0.0
     mean_tailwind_mps: float = 0.0
     actual_speeds_mps: list[float] | None = None
-    watts: list[float] | None = None
+    watts: list[float] | None = None  # series used for the model / power chart
+    times_utc: list[datetime] | None = None
     weather_when: datetime | None = None
     mean_grade_pct: float = 0.0
     used_ride_start_time: bool = False
     power_source: str = "entered"  # "meter" | "entered"
     mean_wind_speed_mps: float = 0.0
     mean_wind_from_deg: float = 0.0
+    power_window_s: float | None = None  # 3.0 if rolled; None if raw / entered
 
     @property
     def distances_km(self) -> list[float]:
@@ -149,19 +151,86 @@ class PredictionResult:
     def mean_wind_speed_mph(self) -> float:
         return self.mean_wind_speed_mps * MPS_TO_MPH
 
+    @property
+    def actual_elapsed_s(self) -> float | None:
+        """Elapsed time from recorded timestamps when present."""
+        if not self.times_utc or len(self.times_utc) < 2:
+            return None
+        dt = (self.times_utc[-1] - self.times_utc[0]).total_seconds()
+        return dt if dt > 0 else None
+
+
+def power_series_3s(
+    watts: Sequence[float],
+    times_utc: Sequence[datetime] | None = None,
+    *,
+    window_s: float = 3.0,
+) -> tuple[list[float], float | None]:
+    """Align power to a ~3 s average for the speed solver.
+
+    Head units often already emit a ~3 s average. If the median sample interval
+    is already near that window, return the recorded series unchanged (do not
+    double-smooth). Faster streams get a trailing ``window_s`` rolling mean.
+
+    Returns ``(powers, window_applied_or_None)``.
+    """
+    n = len(watts)
+    if n == 0:
+        return [], None
+
+    def _finite(w: float) -> float:
+        return float(w) if math.isfinite(w) else float("nan")
+
+    raw = [_finite(w) for w in watts]
+    if times_utc is None or len(times_utc) != n or n < 2:
+        # No timing → trust the recorded series (often already smoothed).
+        return raw, None
+
+    dts: list[float] = []
+    for i in range(1, n):
+        dt = (times_utc[i] - times_utc[i - 1]).total_seconds()
+        if dt > 0.0:
+            dts.append(dt)
+    if not dts:
+        return raw, None
+    dts_sorted = sorted(dts)
+    median_dt = dts_sorted[len(dts_sorted) // 2]
+    # Already ~3 s (or slower): use as-is.
+    if median_dt >= window_s * 0.75:
+        return raw, None
+
+    out: list[float] = []
+    for i in range(n):
+        t_end = times_utc[i]
+        t_start = t_end - timedelta(seconds=window_s)
+        vals: list[float] = []
+        for j in range(i, -1, -1):
+            if times_utc[j] < t_start:
+                break
+            w = raw[j]
+            if math.isfinite(w) and w >= 0.0:
+                vals.append(w)
+        if vals:
+            out.append(sum(vals) / len(vals))
+        else:
+            out.append(raw[i])
+    return out, window_s
+
 
 @dataclass(frozen=True)
 class WhatIfResult:
-    """Speeds/ETAs after power, wind-speed, and grade-scale what-if sliders."""
+    """Speeds/ETAs after power mode, wind-speed, and grade-scale what-if."""
 
     speeds_with_wind_mps: list[float]
     speeds_no_wind_mps: list[float]
     eta_with_wind_s: float
     eta_no_wind_s: float
-    power_w: float
+    power_w: float  # mean / flat watts used for captions
     wind_speed_mps: float
     wind_from_deg: float
     grade_scale: float  # 1.0 = 100% of route grades
+    powers_w: list[float] | None = None  # series plotted / used when recorded
+    used_recorded_power: bool = False
 
     @property
     def speeds_with_wind_mph(self) -> list[float]:
@@ -182,11 +251,13 @@ def apply_what_if(
     power_w: float,
     wind_speed_mps: float,
     grade_scale: float = 1.0,
+    use_recorded_power: bool = False,
 ) -> WhatIfResult:
-    """Re-solve with flat power, scaled wind speed (same direction), scaled grades.
+    """Re-solve with power (recorded series or flat), scaled wind, scaled grades.
 
-    Does not use the recorded watts stream for the model — that stays on the
-    chart as the Power trace. Grade scale of 1.0 is the route as recorded.
+    When ``use_recorded_power`` and the result has a watts series, each point
+    uses that power with grade and wind. Otherwise uses flat ``power_w``.
+    Grade scale of 1.0 is the route as recorded.
     """
     n = len(result.grades)
     scale_g = max(0.0, float(grade_scale))
@@ -206,14 +277,27 @@ def apply_what_if(
     elif result.weather_ok and target_wind <= 1e-6:
         winds = [WindComponents()] * n
     elif result.weather_ok:
-        # Forecast was calm; keep calm along-track structure (still zero).
         winds = list(result.winds) if len(result.winds) == n else [WindComponents()] * n
     else:
         winds = [WindComponents()] * n
 
+    use_series = (
+        use_recorded_power
+        and result.has_watts
+        and result.watts is not None
+        and len(result.watts) == n
+    )
+    powers_w: list[float] | None = list(result.watts) if use_series else None
+    flat = max(1.0, float(power_w))
+    if use_series and powers_w is not None:
+        finite = [w for w in powers_w if math.isfinite(w) and w > 0.0]
+        caption_power = sum(finite) / len(finite) if finite else flat
+    else:
+        caption_power = flat
+
     params = RiderBikeParams(
         rider_mass_kg=result.params.rider_mass_kg,
-        power_w=max(1.0, float(power_w)),
+        power_w=caption_power if use_series else flat,
         bike_mass_kg=result.params.bike_mass_kg,
         cd=result.params.cd,
         area_m2=result.params.area_m2,
@@ -222,20 +306,23 @@ def apply_what_if(
         tuck_on_descent=result.params.tuck_on_descent,
         drivetrain_efficiency=result.params.drivetrain_efficiency,
     )
-    # Flat power only (no powers_w) for the what-if model.
-    speeds_calm = solve_speeds(params, grades)
+    speeds_calm = solve_speeds(params, grades, powers_w=powers_w)
     speeds_wind = (
-        solve_speeds(params, grades, winds) if result.weather_ok else list(speeds_calm)
+        solve_speeds(params, grades, winds, powers_w=powers_w)
+        if result.weather_ok
+        else list(speeds_calm)
     )
     return WhatIfResult(
         speeds_with_wind_mps=speeds_wind,
         speeds_no_wind_mps=speeds_calm,
         eta_with_wind_s=eta_seconds(result.distances_m, speeds_wind),
         eta_no_wind_s=eta_seconds(result.distances_m, speeds_calm),
-        power_w=params.power_w,
+        power_w=caption_power,
         wind_speed_mps=target_wind,
         wind_from_deg=result.mean_wind_from_deg,
         grade_scale=scale_g,
+        powers_w=powers_w,
+        used_recorded_power=use_series,
     )
 
 
@@ -269,8 +356,9 @@ def predict_speeds(
 
     powers_w: list[float] | None = None
     power_source = "entered"
+    power_window_s: float | None = None
     if route.has_watts and route.watts is not None:
-        powers_w = list(route.watts)
+        powers_w, power_window_s = power_series_3s(route.watts, route.times_utc)
         power_source = "meter"
         finite = [w for w in powers_w if math.isfinite(w) and w > 0.0]
         if finite:
@@ -375,7 +463,9 @@ def predict_speeds(
 
     mean_along, mean_head, mean_tail = head_tail_summary(wind_along)
     actual = list(route.actual_speeds_mps) if route.has_actual_speeds else None
-    watts_out = list(route.watts) if route.has_watts and route.watts is not None else None
+    # Store the series used by the solver (3s-aligned when rolled).
+    watts_out = list(powers_w) if powers_w is not None else None
+    times_out = list(route.times_utc) if route.times_utc is not None else None
 
     return PredictionResult(
         distances_m=list(route.distances_m),
@@ -400,12 +490,14 @@ def predict_speeds(
         mean_tailwind_mps=mean_tail,
         actual_speeds_mps=actual,
         watts=watts_out,
+        times_utc=times_out,
         weather_when=weather_when,
         mean_grade_pct=route.mean_grade_pct(),
         used_ride_start_time=used_ride_start,
         power_source=power_source,
         mean_wind_speed_mps=mean_wind_speed,
         mean_wind_from_deg=mean_wind_from,
+        power_window_s=power_window_s,
     )
 
 
