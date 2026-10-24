@@ -88,6 +88,20 @@ def test_crosswind_adds_drag_not_free_speed() -> None:
     assert cross > calm
 
 
+def test_yaw_cda_factor_extra_drag_when_enabled() -> None:
+    from bike_wind.physics.forces import yaw_cda_factor
+
+    assert yaw_cda_factor(10.0, 0.0) == pytest.approx(1.0)
+    assert yaw_cda_factor(5.0, 5.0) > 1.0
+    assert yaw_cda_factor(0.0, 20.0) == pytest.approx(1.25)
+    off = _flat_params(yaw_cda=False)
+    on = _flat_params(yaw_cda=True)
+    wind = WindComponents(along_track=0.0, cross_track=8.0)
+    assert aero_force(10.0, on, wind=wind) > aero_force(10.0, off, wind=wind)
+    # No crosswind → yaw factor is 1, same as off.
+    assert aero_force(10.0, on) == pytest.approx(aero_force(10.0, off))
+
+
 def test_tuck_reduces_area_on_descent() -> None:
     p = _flat_params()
     assert effective_area(p, grade=-0.03) == pytest.approx(p.area_m2 * TUCK_AREA_FACTOR)

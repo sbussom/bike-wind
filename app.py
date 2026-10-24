@@ -1403,6 +1403,8 @@ def main() -> None:
 
         route = downsample_route(route, max_points=300)
         surface = resolve_surface(st.session_state.surface_key)
+        from bike_wind.calibration.cda_defaults import YAW_CDA_ENABLED
+
         params = RiderBikeParams(
             rider_mass_kg=float(st.session_state.rider_kg),
             power_w=float(power_w),
@@ -1411,6 +1413,7 @@ def main() -> None:
             area_m2=aero.area_m2,
             crr=surface.crr,
             drivetrain_efficiency=DRIVETRAIN_EFFICIENCY,
+            yaw_cda=YAW_CDA_ENABLED,
         )
         wind_z = standing_height_to_wind_z_m(float(st.session_state.height_cm))
         with st.spinner("Fetching wind and solving…"):

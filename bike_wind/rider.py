@@ -155,11 +155,16 @@ def resolve_aero(
     full_aero_kit: bool = False,
     non_aero: bool = False,
     bike_mass_kg: float | None = None,
+    apply_fitted_cda: bool = True,
 ) -> ResolvedAero:
     """Combine position preset with optional aero kit toggles.
 
     If both kit toggles are set, aero-kit wins (mutually exclusive intent).
+    When ``apply_fitted_cda`` and the calibration gate kept a new Cd·A, the
+    default gravel-hoods preset uses that Cd·A (cd=1, area=fitted).
     """
+    from bike_wind.calibration.cda_defaults import USE_FITTED_CDA, cda_in_use
+
     preset = POSITION_PRESETS.get(position_key) or POSITION_PRESETS[DEFAULT_POSITION_KEY]
     cd = preset.cd
     area = preset.area_m2
@@ -175,6 +180,17 @@ def resolve_aero(
         area += AERO_HELMET_KIT_A
     elif use_non:
         cd += NON_AERO_CD
+
+    # Apply held-out Cd·A only on the stock gravel-hoods path (no kit deltas).
+    if (
+        apply_fitted_cda
+        and USE_FITTED_CDA
+        and preset.key == DEFAULT_POSITION_KEY
+        and not use_aero
+        and not use_non
+    ):
+        cd = 1.0
+        area = cda_in_use()
 
     mass = preset.bike_mass_kg if bike_mass_kg is None else bike_mass_kg
     return ResolvedAero(

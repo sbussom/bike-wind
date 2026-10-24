@@ -100,6 +100,8 @@ def load_route_from_streams(path: Path) -> tuple[int, RouteStreams, float | None
 
 
 def default_params() -> RiderBikeParams:
+    from bike_wind.calibration.cda_defaults import YAW_CDA_ENABLED
+
     aero = resolve_aero("gravel_hoods")
     surface = resolve_surface("packed_sand")
     return RiderBikeParams(
@@ -110,6 +112,7 @@ def default_params() -> RiderBikeParams:
         area_m2=aero.area_m2,
         crr=surface.crr,
         drivetrain_efficiency=DRIVETRAIN_EFFICIENCY,
+        yaw_cda=YAW_CDA_ENABLED,
     )
 
 

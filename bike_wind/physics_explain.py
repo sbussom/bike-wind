@@ -87,17 +87,7 @@ def explain_prediction(
         power_w = float(whatif.power_w)
         power_note = f"flat slider ({power_w:.0f} W)"
 
-    params = RiderBikeParams(
-        rider_mass_kg=result.params.rider_mass_kg,
-        power_w=max(0.0, power_w),
-        bike_mass_kg=result.params.bike_mass_kg,
-        cd=result.params.cd,
-        area_m2=result.params.area_m2,
-        crr=result.params.crr,
-        rho=result.params.rho,
-        tuck_on_descent=result.params.tuck_on_descent,
-        drivetrain_efficiency=result.params.drivetrain_efficiency,
-    )
+    params = result.params.with_updates(power_w=max(0.0, power_w))
     cda = params.cd * params.area_m2
     mass = params.total_mass_kg
     eta = params.drivetrain_efficiency
@@ -126,6 +116,19 @@ def explain_prediction(
         else 0.0
     )
 
+    from bike_wind.calibration.cda_defaults import (
+        DEFAULT_CDA,
+        FITTED_CDA,
+        USE_FITTED_CDA,
+        YAW_CDA_ENABLED,
+        cda_fit_label,
+    )
+
+    yaw_note = (
+        f" yaw Cd·A factor on (k=1.5, cap 1.25)."
+        if params.yaw_cda or YAW_CDA_ENABLED
+        else " yaw Cd·A factor off."
+    )
     lines = [
         EquationLine(
             title="Inputs at this point",
@@ -133,9 +136,23 @@ def explain_prediction(
                 f"P = {power_w:.0f} W ({power_note}); "
                 f"m = {params.rider_mass_kg:.1f}+{params.bike_mass_kg:.1f} = {mass:.1f} kg; "
                 f"Cd·A = {params.cd:.2f}×{params.area_m2:.3f} = {cda:.3f} m²; "
-                f"Crr = {params.crr:.4f}; η = {eta:.2f}; ρ = {rho:.3f} kg/m³"
+                f"Crr = {params.crr:.4f}; η = {eta:.2f}; ρ = {rho:.3f} kg/m³."
+                f"{yaw_note}"
             ),
             plain="These are the same rider/bike numbers the speed solver uses on this effort.",
+        ),
+        EquationLine(
+            title="Cd·A calibration",
+            latex_or_text=(
+                f"{cda_fit_label()}; "
+                f"default preset = {DEFAULT_CDA:.3f} m²; "
+                f"fitted = {FITTED_CDA:.3f} m² "
+                f"({'applied' if USE_FITTED_CDA else 'held out — not applied'})."
+            ),
+            plain=(
+                "Least-squares Cd·A on device-power train rides (Crr fixed at 0.008); "
+                "applied only when 2024+ hold-out moving MAE dropped."
+            ),
         ),
         EquationLine(
             title="Grade and wind",

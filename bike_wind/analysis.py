@@ -163,17 +163,7 @@ def solve_speeds_for_power(
     winds: Sequence[WindComponents],
     distances_m: Sequence[float] | None = None,
 ) -> list[float]:
-    params = RiderBikeParams(
-        rider_mass_kg=base.rider_mass_kg,
-        power_w=power_w,
-        bike_mass_kg=base.bike_mass_kg,
-        cd=base.cd,
-        area_m2=base.area_m2,
-        crr=base.crr,
-        rho=base.rho,
-        tuck_on_descent=base.tuck_on_descent,
-        drivetrain_efficiency=base.drivetrain_efficiency,
-    )
+    params = base.with_updates(power_w=power_w)
     return solve_speeds(params, grades, winds, distances_m=distances_m)
 
 

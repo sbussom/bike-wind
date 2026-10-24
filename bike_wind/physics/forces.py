@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 
 from bike_wind.physics.constants import (
     AREA_DEFAULT_M2,
@@ -15,6 +16,11 @@ from bike_wind.physics.constants import (
     RHO_DEFAULT,
     TUCK_AREA_FACTOR,
 )
+
+# Extra CdA growth with yaw angle (radians). Crosswind already raises v_rel;
+# this multiplies Cd·A on top. Kept off unless hold-out MAE drops.
+YAW_CDA_K = 1.5
+YAW_CDA_FACTOR_CAP = 1.25
 
 
 @dataclass(frozen=True)
@@ -30,12 +36,16 @@ class RiderBikeParams:
     rho: float = RHO_DEFAULT
     tuck_on_descent: bool = True
     drivetrain_efficiency: float = DRIVETRAIN_EFFICIENCY
+    # When True, multiply Cd·A by a yaw factor after v_rel is formed.
+    yaw_cda: bool = False
 
     @property
     def total_mass_kg(self) -> float:
         return self.rider_mass_kg + self.bike_mass_kg
 
-
+    def with_updates(self, **kwargs: object) -> RiderBikeParams:
+        """Return a copy with selected fields replaced (preserves yaw_cda etc.)."""
+        return replace(self, **kwargs)  # type: ignore[arg-type]
 @dataclass(frozen=True)
 class WindComponents:
     """Wind relative to the rider's direction of travel (m/s).
@@ -64,6 +74,12 @@ def effective_area(params: RiderBikeParams, grade: float) -> float:
     return params.area_m2
 
 
+def yaw_cda_factor(airspeed_along: float, cross_track: float, *, k: float = YAW_CDA_K) -> float:
+    """Cd·A multiplier from yaw angle; 1.0 with no crosswind, capped at 1.25."""
+    yaw = math.atan2(abs(cross_track), abs(airspeed_along) + 1e-6)
+    return min(1.0 + k * yaw**2, YAW_CDA_FACTOR_CAP)
+
+
 def aero_force(
     ground_speed_mps: float,
     params: RiderBikeParams,
@@ -75,6 +91,9 @@ def aero_force(
     airspeed along-track = ground − along-track wind (tailwind reduces airspeed).
     Crosswind increases relative airspeed magnitude and thus drag; it never
     contributes free forward speed.
+
+    When ``params.yaw_cda`` is True, Cd·A is also scaled by ``yaw_cda_factor``
+    (extra yaw penalty on top of the crosswind term in ``v_rel``).
     """
     wind = wind or WindComponents()
     area = effective_area(params, grade)
@@ -84,9 +103,11 @@ def aero_force(
     v_rel = (airspeed_along**2 + wind.cross_track**2) ** 0.5
     if v_rel == 0.0:
         return 0.0
-    # Force along track: ½ρCdA |v_rel| * airspeed_along
-    return 0.5 * params.rho * params.cd * area * v_rel * airspeed_along
-
+    cda = params.cd * area
+    if params.yaw_cda:
+        cda *= yaw_cda_factor(airspeed_along, wind.cross_track)
+    # Force along track: ½ρ CdA |v_rel| * airspeed_along
+    return 0.5 * params.rho * cda * v_rel * airspeed_along
 
 def rolling_force(params: RiderBikeParams, grade: float) -> float:
     """Rolling resistance (N). grade is rise/run (tan θ ≈ sin θ for small grades)."""
@@ -137,18 +158,12 @@ def power_required(
 def _grade_to_theta(grade: float) -> float:
     """Convert grade (rise/run) to road angle θ in radians."""
     # grade = tan(θ); use atan for correctness on steep pitches
-    import math
-
     return math.atan(grade)
 
 
 def _sin(theta: float) -> float:
-    import math
-
     return math.sin(theta)
 
 
 def _cos(theta: float) -> float:
-    import math
-
     return math.cos(theta)

@@ -352,16 +352,8 @@ def apply_what_if(
     else:
         caption_power = flat
 
-    params = RiderBikeParams(
-        rider_mass_kg=result.params.rider_mass_kg,
+    params = result.params.with_updates(
         power_w=caption_power if use_series else flat,
-        bike_mass_kg=result.params.bike_mass_kg,
-        cd=result.params.cd,
-        area_m2=result.params.area_m2,
-        crr=result.params.crr,
-        rho=result.params.rho,
-        tuck_on_descent=result.params.tuck_on_descent,
-        drivetrain_efficiency=result.params.drivetrain_efficiency,
     )
     v0 = _initial_speed_mps(result.actual_speeds_mps)
     speeds_calm = solve_speeds(
@@ -476,17 +468,7 @@ def predict_speeds(
         power_source = "meter"
         finite = [w for w in powers_w if math.isfinite(w) and w > 0.0]
         if finite:
-            params = RiderBikeParams(
-                rider_mass_kg=params.rider_mass_kg,
-                power_w=sum(finite) / len(finite),
-                bike_mass_kg=params.bike_mass_kg,
-                cd=params.cd,
-                area_m2=params.area_m2,
-                crr=params.crr,
-                rho=params.rho,
-                tuck_on_descent=params.tuck_on_descent,
-                drivetrain_efficiency=params.drivetrain_efficiency,
-            )
+            params = params.with_updates(power_w=sum(finite) / len(finite))
 
     v0 = _initial_speed_mps(
         list(route.actual_speeds_mps) if route.has_actual_speeds else None
@@ -533,17 +515,7 @@ def predict_speeds(
         wind_cross = [abs(fp.cross_track_mps) for fp in forecast]
         rhos = [fp.rho for fp in forecast]
         rho_mean = sum(rhos) / len(rhos)
-        params_used = RiderBikeParams(
-            rider_mass_kg=params.rider_mass_kg,
-            power_w=params.power_w,
-            bike_mass_kg=params.bike_mass_kg,
-            cd=params.cd,
-            area_m2=params.area_m2,
-            crr=params.crr,
-            rho=rho_mean,
-            tuck_on_descent=params.tuck_on_descent,
-            drivetrain_efficiency=params.drivetrain_efficiency,
-        )
+        params_used = params.with_updates(rho=rho_mean)
         # Sustained wind drives the drawn speed line and ETA.
         speeds_wind = solve_speeds(
             params_used,

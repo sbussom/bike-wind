@@ -131,19 +131,7 @@ def _point_params(
             power = float(pw)
         else:
             power = float(params.power_w)
-        out.append(
-            RiderBikeParams(
-                rider_mass_kg=params.rider_mass_kg,
-                power_w=power,
-                bike_mass_kg=params.bike_mass_kg,
-                cd=params.cd,
-                area_m2=params.area_m2,
-                crr=params.crr,
-                rho=params.rho,
-                tuck_on_descent=params.tuck_on_descent,
-                drivetrain_efficiency=params.drivetrain_efficiency,
-            )
-        )
+        out.append(params.with_updates(power_w=power))
     return out
 
 
