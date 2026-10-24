@@ -19,10 +19,10 @@ from bike_wind.weather.open_meteo import (
     DEFAULT_TIMEOUT_S,
     ForecastPoint,
     WeatherFetchError,
-    along_cross,
     as_utc,
     nearest_hour_index,
     point_from_raw,
+    reproject_point,
     sample_indices,
 )
 
@@ -96,23 +96,7 @@ def fetch_hrrr_along_route(
     out: list[ForecastPoint] = []
     for i in range(len(lats)):
         nearest = min(sample_idxs, key=lambda s: abs(s - i))
-        base = samples[nearest]
-        along, cross = along_cross(base.u_rider_mps, base.v_rider_mps, bearings_deg[i])
-        out.append(
-            ForecastPoint(
-                lat=lats[i],
-                lon=lons[i],
-                temperature_c=base.temperature_c,
-                pressure_hpa=base.pressure_hpa,
-                u10_mps=base.u10_mps,
-                v10_mps=base.v10_mps,
-                u_rider_mps=base.u_rider_mps,
-                v_rider_mps=base.v_rider_mps,
-                rho=base.rho,
-                along_track_mps=along,
-                cross_track_mps=cross,
-            )
-        )
+        out.append(reproject_point(samples[nearest], lats[i], lons[i], bearings_deg[i]))
     return out
 
 

@@ -60,6 +60,10 @@ class PredictionResult:
     mean_wind_speed_mps: float = 0.0
     mean_wind_from_deg: float = 0.0
     power_window_s: float | None = None  # 3.0 if rolled; None if raw / entered
+    # Gust envelope around the sustained-wind line (not a spiked alternate path).
+    speeds_gust_high_mps: list[float] | None = None
+    speeds_gust_low_mps: list[float] | None = None
+    mean_gust_speed_mps: float | None = None
 
     @property
     def distances_km(self) -> list[float]:
@@ -84,6 +88,27 @@ class PredictionResult:
     @property
     def speeds_no_wind_mph(self) -> list[float]:
         return [v * MPS_TO_MPH for v in self.speeds_no_wind_mps]
+
+    @property
+    def speeds_gust_high_mph(self) -> list[float] | None:
+        if self.speeds_gust_high_mps is None:
+            return None
+        return [v * MPS_TO_MPH for v in self.speeds_gust_high_mps]
+
+    @property
+    def speeds_gust_low_mph(self) -> list[float] | None:
+        if self.speeds_gust_low_mps is None:
+            return None
+        return [v * MPS_TO_MPH for v in self.speeds_gust_low_mps]
+
+    @property
+    def has_gust_band(self) -> bool:
+        return (
+            self.speeds_gust_high_mps is not None
+            and self.speeds_gust_low_mps is not None
+            and len(self.speeds_gust_high_mps) == len(self.distances_m)
+            and len(self.speeds_gust_low_mps) == len(self.distances_m)
+        )
 
     @property
     def actual_speeds_kmh(self) -> list[float] | None:
@@ -241,6 +266,8 @@ class WhatIfResult:
     grade_scale: float  # 1.0 = 100% of route grades
     powers_w: list[float] | None = None  # series plotted / used when recorded
     used_recorded_power: bool = False
+    speeds_gust_high_mps: list[float] | None = None
+    speeds_gust_low_mps: list[float] | None = None
 
     @property
     def speeds_with_wind_mph(self) -> list[float]:
@@ -249,6 +276,26 @@ class WhatIfResult:
     @property
     def speeds_no_wind_mph(self) -> list[float]:
         return [v * MPS_TO_MPH for v in self.speeds_no_wind_mps]
+
+    @property
+    def speeds_gust_high_mph(self) -> list[float] | None:
+        if self.speeds_gust_high_mps is None:
+            return None
+        return [v * MPS_TO_MPH for v in self.speeds_gust_high_mps]
+
+    @property
+    def speeds_gust_low_mph(self) -> list[float] | None:
+        if self.speeds_gust_low_mps is None:
+            return None
+        return [v * MPS_TO_MPH for v in self.speeds_gust_low_mps]
+
+    @property
+    def has_gust_band(self) -> bool:
+        return (
+            self.speeds_gust_high_mps is not None
+            and self.speeds_gust_low_mps is not None
+            and len(self.speeds_gust_high_mps) == len(self.speeds_with_wind_mps)
+        )
 
     @property
     def wind_speed_mph(self) -> float:
@@ -336,6 +383,47 @@ def apply_what_if(
         if result.weather_ok
         else list(speeds_calm)
     )
+    gust_high = None
+    gust_low = None
+    if result.weather_ok and result.has_gust_band and result.mean_gust_speed_mps:
+        # Scale the stored gust envelope by the same wind-speed slider factor.
+        base_gust = max(0.0, float(result.mean_gust_speed_mps))
+        base_wind = max(0.0, float(result.mean_wind_speed_mps))
+        if base_wind > 1e-6 and base_gust > base_wind:
+            # Rebuild light/strong winds from sustained winds × gust/sustained.
+            gfactor = base_gust / base_wind
+            winds_strong = [
+                WindComponents(
+                    along_track=w.along_track * gfactor,
+                    cross_track=w.cross_track * gfactor,
+                )
+                for w in winds
+            ]
+            winds_light = [
+                WindComponents(
+                    along_track=w.along_track / gfactor,
+                    cross_track=w.cross_track / gfactor,
+                )
+                for w in winds
+            ]
+            s_strong = solve_speeds(
+                params,
+                grades,
+                winds_strong,
+                powers_w=powers_w,
+                distances_m=result.distances_m,
+                initial_speed_mps=v0,
+            )
+            s_light = solve_speeds(
+                params,
+                grades,
+                winds_light,
+                powers_w=powers_w,
+                distances_m=result.distances_m,
+                initial_speed_mps=v0,
+            )
+            gust_high = [max(a, b, c) for a, b, c in zip(speeds_wind, s_strong, s_light)]
+            gust_low = [min(a, b, c) for a, b, c in zip(speeds_wind, s_strong, s_light)]
     return WhatIfResult(
         speeds_with_wind_mps=speeds_wind,
         speeds_no_wind_mps=speeds_calm,
@@ -347,6 +435,8 @@ def apply_what_if(
         grade_scale=scale_g,
         powers_w=powers_w,
         used_recorded_power=use_series,
+        speeds_gust_high_mps=gust_high,
+        speeds_gust_low_mps=gust_low,
     )
 
 
@@ -420,6 +510,9 @@ def predict_speeds(
     params_used = params
     mean_wind_speed = 0.0
     mean_wind_from = 0.0
+    speeds_gust_high: list[float] | None = None
+    speeds_gust_low: list[float] | None = None
+    mean_gust_speed: float | None = None
 
     try:
         wx = fetch_weather_along_route(
@@ -451,7 +544,7 @@ def predict_speeds(
             tuck_on_descent=params.tuck_on_descent,
             drivetrain_efficiency=params.drivetrain_efficiency,
         )
-        # Grade from smoothed elevation; inertia-limited along distance.
+        # Sustained wind drives the drawn speed line and ETA.
         speeds_wind = solve_speeds(
             params_used,
             grades,
@@ -465,6 +558,47 @@ def predict_speeds(
             u_mean = sum(fp.u_rider_mps for fp in forecast) / len(forecast)
             v_mean = sum(fp.v_rider_mps for fp in forecast) / len(forecast)
             mean_wind_speed, mean_wind_from = wind_from_uv(u_mean, v_mean)
+            gust_vals = [
+                fp.gust_speed_10m
+                for fp in forecast
+                if fp.gust_speed_10m is not None and math.isfinite(fp.gust_speed_10m)
+            ]
+            if gust_vals and any(
+                fp.gust_along_track_mps is not None for fp in forecast
+            ):
+                winds_strong = [fp.gust_wind for fp in forecast]
+                winds_light = [fp.light_gust_wind for fp in forecast]
+                s_strong = solve_speeds(
+                    params_used,
+                    grades,
+                    winds_strong,
+                    powers_w=powers_w,
+                    distances_m=route.distances_m,
+                    initial_speed_mps=v0,
+                )
+                s_light = solve_speeds(
+                    params_used,
+                    grades,
+                    winds_light,
+                    powers_w=powers_w,
+                    distances_m=route.distances_m,
+                    initial_speed_mps=v0,
+                )
+                speeds_gust_high = [
+                    max(a, b, c) for a, b, c in zip(speeds_wind, s_strong, s_light)
+                ]
+                speeds_gust_low = [
+                    min(a, b, c) for a, b, c in zip(speeds_wind, s_strong, s_light)
+                ]
+                mean_gust_speed = sum(gust_vals) / len(gust_vals)
+            else:
+                speeds_gust_high = None
+                speeds_gust_low = None
+                mean_gust_speed = None
+        else:
+            speeds_gust_high = None
+            speeds_gust_low = None
+            mean_gust_speed = None
     except WeatherFetchError as exc:
         weather_message = (
             f"Weather unavailable ({exc}). Showing calm-air prediction only — "
@@ -538,6 +672,9 @@ def predict_speeds(
         mean_wind_speed_mps=mean_wind_speed,
         mean_wind_from_deg=mean_wind_from,
         power_window_s=power_window_s,
+        speeds_gust_high_mps=speeds_gust_high,
+        speeds_gust_low_mps=speeds_gust_low,
+        mean_gust_speed_mps=mean_gust_speed,
     )
 
 

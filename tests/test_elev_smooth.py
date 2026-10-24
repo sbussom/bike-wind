@@ -11,11 +11,12 @@ def test_smooth_elevations_kills_blip() -> None:
     distances = [float(i * 5) for i in range(n)]
     elevs = [10.0] * n
     elevs[10] = 20.0
-    smooth = smooth_elevations(elevs, distances, window_m=35.0)
+    smooth = smooth_elevations(elevs, distances, window_m=100.0)
     # Blip reduced; neighbors pulled up slightly.
     assert smooth[10] < elevs[10]
     assert smooth[10] > 10.0
-    assert abs(smooth[0] - 10.0) < 0.5
+    # Edge samples share the long window, so they can drift a little.
+    assert abs(smooth[0] - 10.0) < 1.5
 
 
 def test_grades_use_smoothed_elev_by_default() -> None:

@@ -20,7 +20,10 @@ GPX_NS_CANDIDATES = (
 Source = Union[str, Path, bytes, BinaryIO, TextIO]
 
 # Distance window for elevation smoothing before grade (GPS blip filter).
-ELEV_SMOOTH_WINDOW_M = 35.0
+# 100 m (was 35 m): held-out 2024+ moving MAE improved on device-power rides;
+# short windows still left ~3 mph predicted swings under steady power from
+# residual GPS grade spikes.
+ELEV_SMOOTH_WINDOW_M = 100.0
 
 
 def smooth_elevations(
@@ -31,8 +34,9 @@ def smooth_elevations(
 ) -> list[float]:
     """Centered distance-box mean of elevation (meters).
 
-    A ~20–50 m window kills single-sample GPS altitude spikes without
-    flattening real climbs. ``window_m <= 0`` returns a copy unchanged.
+    A ~100 m window kills GPS altitude spikes that otherwise swing predicted
+    speed by multiple mph under steady power, without flattening real climbs.
+    ``window_m <= 0`` returns a copy unchanged.
     """
     n = len(elevs_m)
     if n != len(distances_m):

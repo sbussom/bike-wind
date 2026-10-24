@@ -14,10 +14,10 @@ from bike_wind.weather.open_meteo import (
     DEFAULT_TIMEOUT_S,
     ForecastPoint,
     WeatherFetchError,
-    along_cross,
     as_utc,
     nearest_hour_index,
     point_from_raw,
+    reproject_point,
     sample_indices,
 )
 
@@ -79,23 +79,7 @@ def fetch_archive_along_route(
     out: list[ForecastPoint] = []
     for i in range(len(lats)):
         nearest = min(sample_idxs, key=lambda s: abs(s - i))
-        base = samples[nearest]
-        along, cross = along_cross(base.u_rider_mps, base.v_rider_mps, bearings_deg[i])
-        out.append(
-            ForecastPoint(
-                lat=lats[i],
-                lon=lons[i],
-                temperature_c=base.temperature_c,
-                pressure_hpa=base.pressure_hpa,
-                u10_mps=base.u10_mps,
-                v10_mps=base.v10_mps,
-                u_rider_mps=base.u_rider_mps,
-                v_rider_mps=base.v_rider_mps,
-                rho=base.rho,
-                along_track_mps=along,
-                cross_track_mps=cross,
-            )
-        )
+        out.append(reproject_point(samples[nearest], lats[i], lons[i], bearings_deg[i]))
     return out
 
 
@@ -131,6 +115,7 @@ def _fetch_one_archive(
                 "surface_pressure",
                 "wind_speed_10m",
                 "wind_direction_10m",
+                "wind_gusts_10m",
             ]
         ),
         "wind_speed_unit": "ms",
@@ -148,6 +133,8 @@ def _fetch_one_archive(
     pressure = hourly.get("surface_pressure")
     pressure_hpa = float(pressure[ti]) if pressure else 1013.25
     temp = float(hourly["temperature_2m"][ti])
+    gusts = hourly.get("wind_gusts_10m")
+    gust_10 = float(gusts[ti]) if gusts else None
 
     raw = CachedForecastRaw(
         lat=lat,
@@ -158,6 +145,7 @@ def _fetch_one_archive(
         pressure_hpa=pressure_hpa,
         u10_mps=u10,
         v10_mps=v10,
+        gust_10_mps=gust_10,
     )
     cache.put(raw)
     return point_from_raw(raw, lat, lon, bearing_deg, z_m=z_m, z0_m=z0_m)

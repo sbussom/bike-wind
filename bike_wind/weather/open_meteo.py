@@ -35,12 +35,47 @@ class ForecastPoint:
     rho: float
     along_track_mps: float
     cross_track_mps: float
+    # Open-Meteo wind_gusts_10m projected the same way as sustained wind.
+    # None → no gust product; band falls back to sustained.
+    gust_along_track_mps: float | None = None
+    gust_cross_track_mps: float | None = None
+    wind_speed_10m: float | None = None
+    gust_speed_10m: float | None = None
 
     @property
     def wind(self) -> WindComponents:
         return WindComponents(
             along_track=self.along_track_mps,
             cross_track=abs(self.cross_track_mps),
+        )
+
+    @property
+    def gust_wind(self) -> WindComponents:
+        """Stronger same-direction wind from gust speed (or sustained if missing)."""
+        if self.gust_along_track_mps is None:
+            return self.wind
+        return WindComponents(
+            along_track=self.gust_along_track_mps,
+            cross_track=abs(self.gust_cross_track_mps or 0.0),
+        )
+
+    @property
+    def light_gust_wind(self) -> WindComponents:
+        """Weaker bound: scale sustained down by sustained/gust (toward calmer)."""
+        spd = self.wind_speed_10m
+        gst = self.gust_speed_10m
+        if (
+            spd is None
+            or gst is None
+            or spd <= 1e-6
+            or gst <= spd
+            or self.gust_along_track_mps is None
+        ):
+            return self.wind
+        factor = spd / gst  # < 1
+        return WindComponents(
+            along_track=self.along_track_mps * factor,
+            cross_track=abs(self.cross_track_mps) * factor,
         )
 
 
@@ -96,23 +131,7 @@ def fetch_forecast_along_route(
     out: list[ForecastPoint] = []
     for i in range(len(lats)):
         nearest = min(sample_idxs, key=lambda s: abs(s - i))
-        base = samples[nearest]
-        along, cross = along_cross(base.u_rider_mps, base.v_rider_mps, bearings_deg[i])
-        out.append(
-            ForecastPoint(
-                lat=lats[i],
-                lon=lons[i],
-                temperature_c=base.temperature_c,
-                pressure_hpa=base.pressure_hpa,
-                u10_mps=base.u10_mps,
-                v10_mps=base.v10_mps,
-                u_rider_mps=base.u_rider_mps,
-                v_rider_mps=base.v_rider_mps,
-                rho=base.rho,
-                along_track_mps=along,
-                cross_track_mps=cross,
-            )
-        )
+        out.append(reproject_point(samples[nearest], lats[i], lons[i], bearings_deg[i]))
     return out
 
 
@@ -142,6 +161,7 @@ def fetch_one(
                 "surface_pressure",
                 "wind_u_component_10m",
                 "wind_v_component_10m",
+                "wind_gusts_10m",
             ]
         ),
         "timezone": "UTC",
@@ -156,6 +176,8 @@ def fetch_one(
     hourly = payload["hourly"]
     times: list[str] = hourly["time"]
     ti = nearest_hour_index(times, when_utc)
+    gusts = hourly.get("wind_gusts_10m")
+    gust_10 = float(gusts[ti]) if gusts else None
 
     raw = CachedForecastRaw(
         lat=lat,
@@ -166,6 +188,7 @@ def fetch_one(
         pressure_hpa=float(hourly["surface_pressure"][ti]),
         u10_mps=float(hourly["wind_u_component_10m"][ti]),
         v10_mps=float(hourly["wind_v_component_10m"][ti]),
+        gust_10_mps=gust_10,
     )
     cache.put(raw)
     return point_from_raw(raw, lat, lon, bearing_deg, z_m=z_m, z0_m=z0_m)
@@ -187,6 +210,17 @@ def point_from_raw(
         if raw.pressure_hpa > 0
         else RHO_DEFAULT
     )
+    speed_10 = math.hypot(raw.u10_mps, raw.v10_mps)
+    gust_along = None
+    gust_cross = None
+    gust_10 = raw.gust_10_mps
+    if gust_10 is not None and math.isfinite(gust_10) and speed_10 > 1e-6:
+        # Same direction as sustained; magnitude from Open-Meteo gust product.
+        factor = max(1.0, float(gust_10) / speed_10)
+        u_g, v_g = wind_uv_at_rider_height(
+            raw.u10_mps * factor, raw.v10_mps * factor, z_m=z_m, z0_m=z0_m
+        )
+        gust_along, gust_cross = along_cross(u_g, v_g, bearing_deg)
     return ForecastPoint(
         lat=lat,
         lon=lon,
@@ -199,6 +233,10 @@ def point_from_raw(
         rho=rho,
         along_track_mps=along,
         cross_track_mps=cross,
+        gust_along_track_mps=gust_along,
+        gust_cross_track_mps=gust_cross,
+        wind_speed_10m=speed_10,
+        gust_speed_10m=float(gust_10) if gust_10 is not None else None,
     )
 
 
@@ -208,6 +246,42 @@ def along_cross(u: float, v: float, bearing_deg: float) -> tuple[float, float]:
     along = u * math.sin(br) + v * math.cos(br)
     cross = u * math.cos(br) - v * math.sin(br)
     return along, cross
+
+
+def reproject_point(
+    base: ForecastPoint, lat: float, lon: float, bearing_deg: float
+) -> ForecastPoint:
+    """Copy thermo/wind from ``base`` onto a new sample bearing."""
+    along, cross = along_cross(base.u_rider_mps, base.v_rider_mps, bearing_deg)
+    gust_along = None
+    gust_cross = None
+    if (
+        base.gust_speed_10m is not None
+        and base.wind_speed_10m is not None
+        and base.wind_speed_10m > 1e-6
+        and base.gust_speed_10m >= base.wind_speed_10m
+    ):
+        factor = base.gust_speed_10m / base.wind_speed_10m
+        gust_along, gust_cross = along_cross(
+            base.u_rider_mps * factor, base.v_rider_mps * factor, bearing_deg
+        )
+    return ForecastPoint(
+        lat=lat,
+        lon=lon,
+        temperature_c=base.temperature_c,
+        pressure_hpa=base.pressure_hpa,
+        u10_mps=base.u10_mps,
+        v10_mps=base.v10_mps,
+        u_rider_mps=base.u_rider_mps,
+        v_rider_mps=base.v_rider_mps,
+        rho=base.rho,
+        along_track_mps=along,
+        cross_track_mps=cross,
+        gust_along_track_mps=gust_along,
+        gust_cross_track_mps=gust_cross,
+        wind_speed_10m=base.wind_speed_10m,
+        gust_speed_10m=base.gust_speed_10m,
+    )
 
 
 def sample_indices(n: int, max_samples: int) -> list[int]:
@@ -299,23 +373,7 @@ def fetch_forecast_15min_along_route(
     out: list[ForecastPoint] = []
     for i in range(len(lats)):
         nearest = min(sample_idxs, key=lambda s: abs(s - i))
-        base = samples[nearest]
-        along, cross = along_cross(base.u_rider_mps, base.v_rider_mps, bearings_deg[i])
-        out.append(
-            ForecastPoint(
-                lat=lats[i],
-                lon=lons[i],
-                temperature_c=base.temperature_c,
-                pressure_hpa=base.pressure_hpa,
-                u10_mps=base.u10_mps,
-                v10_mps=base.v10_mps,
-                u_rider_mps=base.u_rider_mps,
-                v_rider_mps=base.v_rider_mps,
-                rho=base.rho,
-                along_track_mps=along,
-                cross_track_mps=cross,
-            )
-        )
+        out.append(reproject_point(samples[nearest], lats[i], lons[i], bearings_deg[i]))
     return out
 
 
@@ -345,6 +403,7 @@ def fetch_one_15min(
                 "temperature_2m",
                 "wind_speed_10m",
                 "wind_direction_10m",
+                "wind_gusts_10m",
             ]
         ),
         "hourly": "surface_pressure",
@@ -369,6 +428,8 @@ def fetch_one_15min(
     u10 = -speed * math.sin(rad)
     v10 = -speed * math.cos(rad)
     temp = float(m15["temperature_2m"][ti])
+    gusts = m15.get("wind_gusts_10m")
+    gust_10 = float(gusts[ti]) if gusts else None
 
     pressure_hpa = 1013.25
     hourly = payload.get("hourly") or {}
@@ -387,6 +448,7 @@ def fetch_one_15min(
         pressure_hpa=pressure_hpa,
         u10_mps=u10,
         v10_mps=v10,
+        gust_10_mps=gust_10,
     )
     # Always write the finer slot — upgrades a prior hourly-only cache for this place/time.
     cache.put(raw)

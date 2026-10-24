@@ -8,7 +8,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import streamlit as st
 
-from bike_wind.analysis import format_duration
+from bike_wind.analysis import format_duration, pace_plan_for_target_time
+from bike_wind.physics_explain import explain_prediction
 from bike_wind.gpx.parse import parse_gpx
 from bike_wind.local_wind_map import compass_label, format_wind_speed_dir
 from bike_wind.physics.constants import DRIVETRAIN_EFFICIENCY
@@ -758,13 +759,29 @@ def _load_effort_segment(config, effort: SegmentEffortSummary) -> bool:
     st.session_state.route_source = "effort"
     st.session_state.effort_route = sliced
     st.session_state.strava_segment_id = effort.segment_id
-    st.session_state.strava_meta = {
-        "segment_id": effort.segment_id,
-        "name": effort.name,
-        "distance_m": effort.distance_m,
-        "average_grade": 0.0,
-        "from_cache": False,
-    }
+    kom_time_s = None
+    try:
+        meta = _run_strava_call(
+            config, lambda c: c.get_segment_meta(effort.segment_id, use_cache=False)
+        )
+        kom_time_s = meta.kom_time_s
+        st.session_state.strava_meta = {
+            "segment_id": meta.segment_id,
+            "name": meta.name or effort.name,
+            "distance_m": meta.distance_m or effort.distance_m,
+            "average_grade": meta.average_grade,
+            "from_cache": meta.from_cache,
+            "kom_time_s": kom_time_s,
+        }
+    except Exception:  # noqa: BLE001 — keep effort usable without KOM
+        st.session_state.strava_meta = {
+            "segment_id": effort.segment_id,
+            "name": effort.name,
+            "distance_m": effort.distance_m,
+            "average_grade": 0.0,
+            "from_cache": False,
+            "kom_time_s": None,
+        }
     st.session_state.activity_stream_error = None
     if effort.average_watts is not None and effort.average_watts > 0:
         st.session_state.power_w = int(round(effort.average_watts))
@@ -1354,12 +1371,24 @@ def main() -> None:
                     strava_cfg,
                     lambda c: c.load_segment_route(int(st.session_state.strava_segment_id)),
                 )
+                # Refresh meta for KOM (cache may omit xoms).
+                try:
+                    meta_live = _run_strava_call(
+                        strava_cfg,
+                        lambda c: c.get_segment_meta(
+                            int(st.session_state.strava_segment_id), use_cache=False
+                        ),
+                    )
+                    kom_time_s = meta_live.kom_time_s
+                except Exception:  # noqa: BLE001
+                    kom_time_s = getattr(meta, "kom_time_s", None)
                 st.session_state.strava_meta = {
                     "segment_id": meta.segment_id,
                     "name": meta.name,
                     "distance_m": meta.distance_m,
                     "average_grade": meta.average_grade,
                     "from_cache": meta.from_cache,
+                    "kom_time_s": kom_time_s,
                 }
                 source_label = f"Strava: {meta.name}"
             elif uploaded is not None and not use_sample:
@@ -1532,9 +1561,27 @@ def main() -> None:
             f"calm {format_duration(whatif.eta_no_wind_s)}"
         )
 
-        head_l, head_r = st.columns([5, 1])
+        head_l, head_mid, head_r = st.columns([4, 1, 1])
         with head_l:
             st.caption("Power file used · then predicted vs actual speed")
+        with head_mid:
+            with st.popover("Equations"):
+                try:
+                    explain = explain_prediction(
+                        result,
+                        whatif,
+                        grade_scale=float(whatif_grade_pct) / 100.0,
+                    )
+                    st.caption(
+                        f"Same solver as the chart · sample at "
+                        f"{explain.distance_mi:.2f} mi on this effort"
+                    )
+                    for line in explain.lines:
+                        st.markdown(f"**{line.title}**")
+                        st.code(line.latex_or_text, language=None)
+                        st.caption(line.plain)
+                except Exception as exc:  # noqa: BLE001
+                    st.caption(f"Equations unavailable: {exc}")
         with head_r:
             with st.popover("Info"):
                 st.text(
@@ -1593,13 +1640,23 @@ def main() -> None:
         st.pyplot(fig_p)
         plt.close(fig_p)
 
-        # --- Graph 2: predicted vs actual speed (mph) ---
+        # --- Graph 2: predicted vs actual speed (mph); gust as band ---
         fig2, ax2 = plt.subplots(figsize=(9, 3.2))
         bg2, fg2, accent2 = _style_speed_axes(ax2, dark=dark, fig=fig2)
+        if whatif.has_gust_band and whatif.speeds_gust_low_mph and whatif.speeds_gust_high_mph:
+            ax2.fill_between(
+                result.distances_mi,
+                whatif.speeds_gust_low_mph,
+                whatif.speeds_gust_high_mph,
+                color=accent2,
+                alpha=0.22,
+                linewidth=0,
+                label="Gust band",
+            )
         ax2.plot(
             result.distances_mi,
             whatif.speeds_with_wind_mph,
-            label="Predicted",
+            label="Predicted (sustained wind)",
             color=accent2,
             linewidth=2,
         )
@@ -1628,6 +1685,35 @@ def main() -> None:
         fig2.tight_layout()
         st.pyplot(fig2)
         plt.close(fig2)
+
+        # --- KOM pacing (segment effort) — short ---
+        meta = st.session_state.get("strava_meta") or {}
+        kom_s = meta.get("kom_time_s")
+        if (
+            use_effort
+            and kom_s
+            and isinstance(kom_s, (int, float))
+            and kom_s > 0
+            and result.weather_ok
+        ):
+            try:
+                plan = pace_plan_for_target_time(
+                    float(kom_s),
+                    result.distances_m,
+                    [g * (float(whatif_grade_pct) / 100.0) for g in result.grades],
+                    result.winds,
+                    result.params,
+                )
+                st.caption(
+                    f"KOM {format_duration(float(kom_s))} · "
+                    f"{plan.mean_speed_mph:.1f} mph · "
+                    f"{plan.avg_power_w:.0f} W avg "
+                    f"(peak {plan.peak_power_w:.0f} W; "
+                    f"flat {plan.flat_power_w:.0f} W) · "
+                    f"harder on climbs, easier on flats"
+                )
+            except Exception:  # noqa: BLE001
+                st.caption(f"KOM {format_duration(float(kom_s))} — pace unavailable")
 
 
 if __name__ == "__main__":

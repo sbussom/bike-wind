@@ -24,6 +24,7 @@ class CachedForecastRaw:
     pressure_hpa: float
     u10_mps: float
     v10_mps: float
+    gust_10_mps: float | None = None
 
 
 def default_weather_cache_path() -> Path:
@@ -66,6 +67,12 @@ class ForecastCache:
                 )
                 """
             )
+            cols = {
+                str(r[1])
+                for r in conn.execute("PRAGMA table_info(forecasts)").fetchall()
+            }
+            if "gust_10_mps" not in cols:
+                conn.execute("ALTER TABLE forecasts ADD COLUMN gust_10_mps REAL")
 
     @staticmethod
     def round_coord(value: float, ndigits: int = 3) -> float:
@@ -111,6 +118,7 @@ class ForecastCache:
             ).fetchone()
         if row is None:
             return None
+        gust = row["gust_10_mps"] if "gust_10_mps" in row.keys() else None
         return CachedForecastRaw(
             lat=lat_k,
             lon=lon_k,
@@ -120,6 +128,7 @@ class ForecastCache:
             pressure_hpa=float(row["pressure_hpa"]),
             u10_mps=float(row["u10_mps"]),
             v10_mps=float(row["v10_mps"]),
+            gust_10_mps=float(gust) if gust is not None else None,
         )
 
     def put(self, raw: CachedForecastRaw, *, fetched_at: float | None = None) -> None:
@@ -133,14 +142,16 @@ class ForecastCache:
                 """
                 INSERT INTO forecasts (
                     lat_key, lon_key, forecast_ts, source,
-                    temperature_c, pressure_hpa, u10_mps, v10_mps, fetched_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    temperature_c, pressure_hpa, u10_mps, v10_mps, fetched_at,
+                    gust_10_mps
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(lat_key, lon_key, forecast_ts, source) DO UPDATE SET
                     temperature_c=excluded.temperature_c,
                     pressure_hpa=excluded.pressure_hpa,
                     u10_mps=excluded.u10_mps,
                     v10_mps=excluded.v10_mps,
-                    fetched_at=excluded.fetched_at
+                    fetched_at=excluded.fetched_at,
+                    gust_10_mps=excluded.gust_10_mps
                 """,
                 (
                     lat_k,
@@ -152,5 +163,6 @@ class ForecastCache:
                     raw.u10_mps,
                     raw.v10_mps,
                     fetched_at,
+                    raw.gust_10_mps,
                 ),
             )

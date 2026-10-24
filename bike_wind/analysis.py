@@ -45,6 +45,23 @@ class TargetPowerResult:
 
 
 @dataclass(frozen=True)
+class PacePlan:
+    """Grade-aware watts to match a target time (harder on climbs)."""
+
+    target_time_s: float
+    flat_power_w: float
+    avg_power_w: float
+    peak_power_w: float
+    mean_speed_mps: float
+    powers_w: list[float]
+    message: str
+
+    @property
+    def mean_speed_mph(self) -> float:
+        return self.mean_speed_mps * 2.236936
+
+
+@dataclass(frozen=True)
 class SegmentBin:
     """Distance-bin summary for the results table."""
 
@@ -259,6 +276,108 @@ def power_for_target_time(
         achievable=achievable,
         implausible=implausible,
         ratio=ratio,
+        message=msg,
+    )
+
+
+def grade_power_weights(
+    grades: Sequence[float],
+    *,
+    climb_gain: float = 2.5,
+    descent_cut: float = 0.35,
+) -> list[float]:
+    """Relative watts by grade: more on climbs, less on descents."""
+    out: list[float] = []
+    for g in grades:
+        if g >= 0.0:
+            out.append(1.0 + climb_gain * float(g))
+        else:
+            out.append(max(0.35, 1.0 + descent_cut * float(g)))
+    return out
+
+
+def pace_plan_for_target_time(
+    target_time_s: float,
+    distances_m: Sequence[float],
+    grades: Sequence[float],
+    winds: Sequence[WindComponents],
+    params: RiderBikeParams,
+    *,
+    p_min: float = 50.0,
+    p_max: float = 800.0,
+    tol_s: float = 0.5,
+    max_iter: int = 40,
+) -> PacePlan:
+    """Same ETA as flat watts, but harder on steep grades and easier on flats.
+
+    Searches a scale on grade weights so inertia-limited ETA matches
+    ``target_time_s``. Reports average and peak watts for the plan.
+    """
+    flat = power_for_target_time(
+        target_time_s, distances_m, grades, winds, params,
+        p_min=p_min, p_max=p_max, tol_s=tol_s, max_iter=max_iter,
+    )
+    weights = grade_power_weights(grades)
+    n = len(grades)
+
+    def powers_at(scale: float) -> list[float]:
+        return [max(0.0, scale * w) for w in weights]
+
+    def eta_at(scale: float) -> float:
+        powers = powers_at(scale)
+        # Pointwise power via solve_speeds powers_w
+        speeds = solve_speeds(
+            params,
+            grades,
+            winds,
+            powers_w=powers,
+            distances_m=distances_m,
+        )
+        return eta_seconds(distances_m, speeds)
+
+    # Bracket scale so mean power ≈ flat required, then refine on ETA.
+    mean_w = sum(weights) / max(len(weights), 1)
+    lo = p_min / max(mean_w, 1e-6)
+    hi = p_max / max(mean_w, 1e-6)
+    # Seed near flat solution
+    mid0 = flat.required_power_w / max(mean_w, 1e-6)
+    lo, hi = min(lo, mid0 * 0.5), max(hi, mid0 * 1.5)
+    best_scale = mid0
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        eta = eta_at(mid)
+        best_scale = mid
+        if abs(eta - target_time_s) <= tol_s:
+            break
+        if eta > target_time_s:
+            lo = mid
+        else:
+            hi = mid
+
+    powers = powers_at(best_scale)
+    speeds = solve_speeds(
+        params, grades, winds, powers_w=powers, distances_m=distances_m
+    )
+    eta = eta_seconds(distances_m, speeds)
+    avg = sum(powers) / max(len(powers), 1)
+    peak = max(powers) if powers else 0.0
+    dist = (
+        float(distances_m[-1] - distances_m[0]) if len(distances_m) >= 2 else 0.0
+    )
+    mean_v = dist / eta if eta > 0 else 0.0
+    msg = (
+        f"KOM pace ~{format_duration(target_time_s)}: "
+        f"{mean_v * 2.236936:.1f} mph · "
+        f"{avg:.0f} W avg (peak {peak:.0f} W; flat would be {flat.required_power_w:.0f} W). "
+        f"Harder on climbs, easier on flats."
+    )
+    return PacePlan(
+        target_time_s=target_time_s,
+        flat_power_w=flat.required_power_w,
+        avg_power_w=avg,
+        peak_power_w=peak,
+        mean_speed_mps=mean_v,
+        powers_w=powers,
         message=msg,
     )
 

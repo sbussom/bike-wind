@@ -51,6 +51,28 @@ class StravaConfig:
         return bool(self.client_id and self.client_secret and self.refresh_token)
 
 
+def parse_kom_time_s(raw: object) -> float | None:
+    """Parse Strava ``xoms.kom`` (seconds or mm:ss / h:mm:ss) to seconds."""
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw) if raw > 0 else None
+    text = str(raw).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return float(text)
+    parts = text.split(":")
+    try:
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + float(parts[1])
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+    except ValueError:
+        return None
+    return None
+
+
 @dataclass(frozen=True)
 class SegmentMeta:
     segment_id: int
@@ -62,6 +84,7 @@ class SegmentMeta:
     from_cache: bool = False
     start_lat: float | None = None
     start_lon: float | None = None
+    kom_time_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -276,6 +299,8 @@ class StravaClient:
         start = data.get("start_latlng") or []
         start_lat = float(start[0]) if len(start) >= 2 else None
         start_lon = float(start[1]) if len(start) >= 2 else None
+        xoms = data.get("xoms") or {}
+        kom_time_s = parse_kom_time_s(xoms.get("kom"))
         return SegmentMeta(
             segment_id=int(data["id"]),
             name=str(data.get("name") or f"Segment {segment_id}"),
@@ -286,6 +311,7 @@ class StravaClient:
             from_cache=False,
             start_lat=start_lat,
             start_lon=start_lon,
+            kom_time_s=kom_time_s,
         )
 
     def load_segment_route(
