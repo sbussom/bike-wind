@@ -102,6 +102,12 @@ def test_yaw_cda_factor_extra_drag_when_enabled() -> None:
     assert aero_force(10.0, on) == pytest.approx(aero_force(10.0, off))
 
 
+def test_clothing_cda_scale_default_unchanged() -> None:
+    p = _flat_params()
+    assert p.clothing_cda_scale == 1.0
+    assert p.cda_m2 == pytest.approx(p.cd * p.area_m2)
+
+
 def test_tuck_reduces_area_on_descent() -> None:
     p = _flat_params()
     assert effective_area(p, grade=-0.03) == pytest.approx(p.area_m2 * TUCK_AREA_FACTOR)

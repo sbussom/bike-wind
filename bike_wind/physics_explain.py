@@ -88,7 +88,9 @@ def explain_prediction(
         power_note = f"flat slider ({power_w:.0f} W)"
 
     params = result.params.with_updates(power_w=max(0.0, power_w))
-    cda = params.cd * params.area_m2
+    base_cda = params.cd * params.area_m2
+    clothing_scale = max(0.0, float(params.clothing_cda_scale))
+    cda = base_cda * clothing_scale
     mass = params.total_mass_kg
     eta = params.drivetrain_efficiency
     rho = params.rho
@@ -135,11 +137,21 @@ def explain_prediction(
             latex_or_text=(
                 f"P = {power_w:.0f} W ({power_note}); "
                 f"m = {params.rider_mass_kg:.1f}+{params.bike_mass_kg:.1f} = {mass:.1f} kg; "
-                f"Cd·A = {params.cd:.2f}×{params.area_m2:.3f} = {cda:.3f} m²; "
+                f"base Cd·A = {params.cd:.2f}×{params.area_m2:.3f} = {base_cda:.3f} m²; "
+                f"clothing ×{clothing_scale:.2f} → Cd·A used = {cda:.3f} m²; "
                 f"Crr = {params.crr:.4f}; η = {eta:.2f}; ρ = {rho:.3f} kg/m³."
                 f"{yaw_note}"
             ),
             plain="These are the same rider/bike numbers the speed solver uses on this effort.",
+        ),
+        EquationLine(
+            title="Clothing Cd·A",
+            latex_or_text=(
+                f"clothing multiplier = {clothing_scale:.2f} "
+                f"(1.00 = skin-tight aero; 1.08 = loose jersey); "
+                f"Cd·A in aero_force = {cda:.3f} m²."
+            ),
+            plain="Manual override — Strava does not record clothing; default is skin-tight.",
         ),
         EquationLine(
             title="Cd·A calibration",

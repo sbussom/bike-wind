@@ -15,6 +15,13 @@ from bike_wind.local_wind_map import compass_label, format_wind_speed_dir
 from bike_wind.physics.constants import DRIVETRAIN_EFFICIENCY
 from bike_wind.physics.forces import RiderBikeParams
 from bike_wind.predict import apply_what_if, downsample_route, predict_speeds
+from bike_wind.clothing import (
+    CLOTHING_PRESETS,
+    DEFAULT_CLOTHING_KEY,
+    clothing_key_for_label,
+    clothing_labels,
+    resolve_clothing,
+)
 from bike_wind.rider import (
     DEFAULT_POSITION_KEY,
     DEFAULT_RIDER_KG,
@@ -32,6 +39,7 @@ from bike_wind.rider import (
     surface_key_for_label,
     surface_labels,
 )
+from bike_wind.user_config import clothing_key_from_config, save_rider_config
 try:
     from bike_wind.settings import strava_secrets_presence
 except ImportError:  # pragma: no cover — stale site-packages on Cloud
@@ -248,6 +256,10 @@ def _init_state() -> None:
         st.session_state.position_key = DEFAULT_POSITION_KEY
     if "surface_key" not in st.session_state:
         st.session_state.surface_key = DEFAULT_SURFACE_KEY
+    if "clothing_key" not in st.session_state:
+        st.session_state.clothing_key = clothing_key_from_config()
+        if st.session_state.clothing_key not in CLOTHING_PRESETS:
+            st.session_state.clothing_key = DEFAULT_CLOTHING_KEY
     if "power_w" not in st.session_state:
         st.session_state.power_w = 220
     if "strava_meta" not in st.session_state:
@@ -1264,6 +1276,27 @@ def main() -> None:
             + (f" · {surface.estimate_note}" if surface.estimate_note else "")
         )
 
+        cloth_labels = clothing_labels()
+        current_cloth = CLOTHING_PRESETS[st.session_state.clothing_key].label
+        cloth_chosen = st.selectbox(
+            "Clothing",
+            options=cloth_labels,
+            index=cloth_labels.index(current_cloth) if current_cloth in cloth_labels else 0,
+            help=(
+                "Cd·A multiplier. Skin-tight = 1.00 (default, unchanged predictions). "
+                "Loose jersey ≈ +8%. Manual — Strava has no clothing field."
+            ),
+        )
+        clothing_key = clothing_key_for_label(cloth_chosen)
+        if clothing_key != st.session_state.clothing_key:
+            st.session_state.clothing_key = clothing_key
+            save_rider_config({"clothing_key": clothing_key})
+        clothing = resolve_clothing(st.session_state.clothing_key)
+        st.caption(
+            f"Cd·A × {clothing.cda_multiplier:.2f}"
+            + (f" · {clothing.note}" if clothing.note else "")
+        )
+
         power_w = st.slider("Power (W)", 80, 450, int(st.session_state.power_w), 5)
         st.session_state.power_w = power_w
 
@@ -1297,9 +1330,11 @@ def main() -> None:
             non_aero=bool(non_aero),
             bike_mass_kg=float(st.session_state.bike_kg),
         )
+        clothing = resolve_clothing(st.session_state.clothing_key)
+        cda_used = aero.cd * aero.area_m2 * clothing.cda_multiplier
         st.caption(
             f"{POSITION_PRESETS[aero.position_key].label} · "
-            f"Cd·A={aero.cd * aero.area_m2:.3f} · "
+            f"Cd·A={cda_used:.3f} (×{clothing.cda_multiplier:.2f} clothing) · "
             f"Crr={surface.crr:.4f} · "
             f"{st.session_state.rider_kg:.0f}+{aero.bike_mass_kg:.0f}="
             f"{st.session_state.rider_kg + aero.bike_mass_kg:.0f} kg"
@@ -1403,6 +1438,7 @@ def main() -> None:
 
         route = downsample_route(route, max_points=300)
         surface = resolve_surface(st.session_state.surface_key)
+        clothing = resolve_clothing(st.session_state.clothing_key)
         from bike_wind.calibration.cda_defaults import YAW_CDA_ENABLED
 
         params = RiderBikeParams(
@@ -1414,6 +1450,7 @@ def main() -> None:
             crr=surface.crr,
             drivetrain_efficiency=DRIVETRAIN_EFFICIENCY,
             yaw_cda=YAW_CDA_ENABLED,
+            clothing_cda_scale=clothing.cda_multiplier,
         )
         wind_z = standing_height_to_wind_z_m(float(st.session_state.height_cm))
         with st.spinner("Fetching wind and solving…"):

@@ -38,14 +38,23 @@ class RiderBikeParams:
     drivetrain_efficiency: float = DRIVETRAIN_EFFICIENCY
     # When True, multiply Cd·A by a yaw factor after v_rel is formed.
     yaw_cda: bool = False
+    # Clothing Cd·A scale (1.0 = skin-tight aero; ~1.08 = loose jersey).
+    clothing_cda_scale: float = 1.0
 
     @property
     def total_mass_kg(self) -> float:
         return self.rider_mass_kg + self.bike_mass_kg
 
+    @property
+    def cda_m2(self) -> float:
+        """Base Cd·A before yaw (includes clothing scale)."""
+        return self.cd * self.area_m2 * max(0.0, float(self.clothing_cda_scale))
+
     def with_updates(self, **kwargs: object) -> RiderBikeParams:
         """Return a copy with selected fields replaced (preserves yaw_cda etc.)."""
         return replace(self, **kwargs)  # type: ignore[arg-type]
+
+
 @dataclass(frozen=True)
 class WindComponents:
     """Wind relative to the rider's direction of travel (m/s).
@@ -92,6 +101,7 @@ def aero_force(
     Crosswind increases relative airspeed magnitude and thus drag; it never
     contributes free forward speed.
 
+    Clothing multiplies Cd·A via ``params.clothing_cda_scale`` (default 1.0).
     When ``params.yaw_cda`` is True, Cd·A is also scaled by ``yaw_cda_factor``
     (extra yaw penalty on top of the crosswind term in ``v_rel``).
     """
@@ -103,11 +113,12 @@ def aero_force(
     v_rel = (airspeed_along**2 + wind.cross_track**2) ** 0.5
     if v_rel == 0.0:
         return 0.0
-    cda = params.cd * area
+    cda = params.cd * area * max(0.0, float(params.clothing_cda_scale))
     if params.yaw_cda:
         cda *= yaw_cda_factor(airspeed_along, wind.cross_track)
     # Force along track: ½ρ CdA |v_rel| * airspeed_along
     return 0.5 * params.rho * cda * v_rel * airspeed_along
+
 
 def rolling_force(params: RiderBikeParams, grade: float) -> float:
     """Rolling resistance (N). grade is rise/run (tan θ ≈ sin θ for small grades)."""
