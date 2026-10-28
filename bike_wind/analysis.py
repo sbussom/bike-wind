@@ -142,16 +142,49 @@ def wind_along_uncertainty_mps(horizon_days: float) -> float:
     return min(1.20, 0.70 + 0.12 * (d - 5.0))
 
 
+# Recorded speed below this is a stop. Moving time does not include it.
+# About 1.1 mph — under the 3 mph speed-error gate, and above GPS creep.
+RECORDED_STOP_MPS = 0.5
+
+
 def eta_seconds(
     distances_m: Sequence[float],
     speeds_mps: Sequence[float],
+    *,
+    gap_dt: Sequence[float] | None = None,
+    actual_speeds_mps: Sequence[float] | None = None,
 ) -> float:
-    if len(distances_m) < 2:
+    """Seconds to cover the route at ``speeds_mps``.
+
+    Uses integrator gap times when ``gap_dt`` is provided (the seconds the
+    bike was actually rolling). Otherwise distance / speed, and a modeled
+    stop (speed under 0.05 m/s) adds nothing — it is not crawled at 0.1 m/s.
+
+    A recorded stop (actual speed under 0.5 m/s) is left out of the sum.
+    That is the moving-time clock. A low predicted speed while the recording
+    still shows the rider rolling is coasting, and it keeps its own time.
+    """
+    n = len(distances_m)
+    if n < 2:
         return 0.0
     total = 0.0
-    for i in range(len(distances_m) - 1):
+    use_gap = gap_dt is not None and len(gap_dt) == n - 1
+    for i in range(n - 1):
         dd = distances_m[i + 1] - distances_m[i]
-        v = max(speeds_mps[i], 0.1)
+        if dd <= 0.0:
+            continue
+        if actual_speeds_mps is not None and i < len(actual_speeds_mps):
+            av = actual_speeds_mps[i]
+            if math.isfinite(av) and av < RECORDED_STOP_MPS:
+                continue
+        if use_gap:
+            dt = float(gap_dt[i])
+            if math.isfinite(dt) and dt > 0.0:
+                total += dt
+            continue
+        v = float(speeds_mps[i]) if i < len(speeds_mps) else 0.0
+        if not math.isfinite(v) or v < 0.05:
+            continue
         total += dd / v
     return total
 
@@ -185,10 +218,15 @@ def power_for_target_time(
         raise ValueError("target_time_s must be positive")
 
     def eta_at(power: float) -> float:
-        speeds = solve_speeds_for_power(
-            power, params, grades, winds, distances_m=distances_m
+        gap: list[float] = []
+        speeds = solve_speeds(
+            params.with_updates(power_w=power),
+            grades,
+            winds,
+            distances_m=distances_m,
+            gap_dt=gap,
         )
-        return eta_seconds(distances_m, speeds)
+        return eta_seconds(distances_m, speeds, gap_dt=gap)
 
     eta_hi = eta_at(p_max)  # more power → lower ETA
     eta_lo = eta_at(p_min)
@@ -315,15 +353,16 @@ def pace_plan_for_target_time(
 
     def eta_at(scale: float) -> float:
         powers = powers_at(scale)
-        # Pointwise power via solve_speeds powers_w
+        gap: list[float] = []
         speeds = solve_speeds(
             params,
             grades,
             winds,
             powers_w=powers,
             distances_m=distances_m,
+            gap_dt=gap,
         )
-        return eta_seconds(distances_m, speeds)
+        return eta_seconds(distances_m, speeds, gap_dt=gap)
 
     # Bracket scale so mean power ≈ flat required, then refine on ETA.
     mean_w = sum(weights) / max(len(weights), 1)
@@ -345,10 +384,16 @@ def pace_plan_for_target_time(
             hi = mid
 
     powers = powers_at(best_scale)
+    gap_plan: list[float] = []
     speeds = solve_speeds(
-        params, grades, winds, powers_w=powers, distances_m=distances_m
+        params,
+        grades,
+        winds,
+        powers_w=powers,
+        distances_m=distances_m,
+        gap_dt=gap_plan,
     )
-    eta = eta_seconds(distances_m, speeds)
+    eta = eta_seconds(distances_m, speeds, gap_dt=gap_plan)
     avg = sum(powers) / max(len(powers), 1)
     peak = max(powers) if powers else 0.0
     dist = (
@@ -385,8 +430,11 @@ def time_uncertainty_band(
     horizon = forecast_horizon_days(when, now=now)
     delta = wind_along_uncertainty_mps(horizon)
 
-    speeds_nom = solve_speeds(params, grades, winds, distances_m=distances_m)
-    eta = eta_seconds(distances_m, speeds_nom)
+    gap_nom: list[float] = []
+    speeds_nom = solve_speeds(
+        params, grades, winds, distances_m=distances_m, gap_dt=gap_nom
+    )
+    eta = eta_seconds(distances_m, speeds_nom, gap_dt=gap_nom)
 
     # Favorable: add delta to along-track (more tail / less head)
     winds_fast = [
@@ -398,12 +446,16 @@ def time_uncertainty_band(
         WindComponents(along_track=w.along_track - delta, cross_track=w.cross_track)
         for w in winds
     ]
-    eta_fast = eta_seconds(
-        distances_m, solve_speeds(params, grades, winds_fast, distances_m=distances_m)
+    gap_fast: list[float] = []
+    gap_slow: list[float] = []
+    speeds_fast = solve_speeds(
+        params, grades, winds_fast, distances_m=distances_m, gap_dt=gap_fast
     )
-    eta_slow = eta_seconds(
-        distances_m, solve_speeds(params, grades, winds_slow, distances_m=distances_m)
+    speeds_slow = solve_speeds(
+        params, grades, winds_slow, distances_m=distances_m, gap_dt=gap_slow
     )
+    eta_fast = eta_seconds(distances_m, speeds_fast, gap_dt=gap_fast)
+    eta_slow = eta_seconds(distances_m, speeds_slow, gap_dt=gap_slow)
 
     note = (
         f"Horizon {horizon:.1f} d → ±{delta:.2f} m/s along-track wind "
@@ -477,8 +529,8 @@ def build_segment_bins(
             if dd <= 0:
                 continue
             covered += dd
-            t_wind += dd / max(speeds_with_wind_mps[i], 0.1)
-            t_calm += dd / max(speeds_no_wind_mps[i], 0.1)
+            t_wind += dd / speeds_with_wind_mps[i] if speeds_with_wind_mps[i] >= 0.05 else 0.0
+            t_calm += dd / speeds_no_wind_mps[i] if speeds_no_wind_mps[i] >= 0.05 else 0.0
         use_dist = covered if covered > 0 else dist
         speed_w = (use_dist / t_wind * 3.6) if t_wind > 0 else 0.0
         speed_c = (use_dist / t_calm * 3.6) if t_calm > 0 else 0.0

@@ -64,6 +64,9 @@ class PredictionResult:
     speeds_gust_high_mps: list[float] | None = None
     speeds_gust_low_mps: list[float] | None = None
     mean_gust_speed_mps: float | None = None
+    # Integrator seconds for each gap. Moving time uses these, not a 0.1 m/s floor.
+    gap_dt_with_wind: list[float] | None = None
+    gap_dt_no_wind: list[float] | None = None
 
     @property
     def distances_km(self) -> list[float]:
@@ -138,11 +141,21 @@ class PredictionResult:
 
     @property
     def eta_with_wind_s(self) -> float:
-        return eta_seconds(self.distances_m, self.speeds_with_wind_mps)
+        return eta_seconds(
+            self.distances_m,
+            self.speeds_with_wind_mps,
+            gap_dt=self.gap_dt_with_wind,
+            actual_speeds_mps=self.actual_speeds_mps,
+        )
 
     @property
     def eta_no_wind_s(self) -> float:
-        return eta_seconds(self.distances_m, self.speeds_no_wind_mps)
+        return eta_seconds(
+            self.distances_m,
+            self.speeds_no_wind_mps,
+            gap_dt=self.gap_dt_no_wind,
+            actual_speeds_mps=self.actual_speeds_mps,
+        )
 
     @property
     def power_source_note(self) -> str:
@@ -356,13 +369,16 @@ def apply_what_if(
         power_w=caption_power if use_series else flat,
     )
     v0 = _initial_speed_mps(result.actual_speeds_mps)
+    gap_calm: list[float] = []
     speeds_calm = solve_speeds(
         params,
         grades,
         powers_w=powers_w,
         distances_m=result.distances_m,
         initial_speed_mps=v0,
+        gap_dt=gap_calm,
     )
+    gap_wind: list[float] = []
     speeds_wind = (
         solve_speeds(
             params,
@@ -371,10 +387,13 @@ def apply_what_if(
             powers_w=powers_w,
             distances_m=result.distances_m,
             initial_speed_mps=v0,
+            gap_dt=gap_wind,
         )
         if result.weather_ok
         else list(speeds_calm)
     )
+    if not result.weather_ok:
+        gap_wind = gap_calm
     gust_high = None
     gust_low = None
     if result.weather_ok and result.has_gust_band and result.mean_gust_speed_mps:
@@ -419,8 +438,18 @@ def apply_what_if(
     return WhatIfResult(
         speeds_with_wind_mps=speeds_wind,
         speeds_no_wind_mps=speeds_calm,
-        eta_with_wind_s=eta_seconds(result.distances_m, speeds_wind),
-        eta_no_wind_s=eta_seconds(result.distances_m, speeds_calm),
+        eta_with_wind_s=eta_seconds(
+            result.distances_m,
+            speeds_wind,
+            gap_dt=gap_wind,
+            actual_speeds_mps=result.actual_speeds_mps,
+        ),
+        eta_no_wind_s=eta_seconds(
+            result.distances_m,
+            speeds_calm,
+            gap_dt=gap_calm,
+            actual_speeds_mps=result.actual_speeds_mps,
+        ),
         power_w=caption_power,
         wind_speed_mps=target_wind,
         wind_from_deg=result.mean_wind_from_deg,
@@ -430,6 +459,52 @@ def apply_what_if(
         speeds_gust_high_mps=gust_high,
         speeds_gust_low_mps=gust_low,
     )
+
+
+def _smooth_forecast(points, distances_m, window_m: float):
+    """Centered distance mean of along-track and cross-track wind.
+
+    Gust components get the same window so the band stays around the line.
+    ``window_m <= 0`` leaves the series alone.
+    """
+    from dataclasses import replace
+
+    from bike_wind.gpx.parse import smooth_elevations
+
+    if window_m <= 0.0 or len(points) < 3:
+        return points
+    along = smooth_elevations(
+        [p.along_track_mps for p in points], distances_m, window_m=window_m
+    )
+    cross = smooth_elevations(
+        [p.cross_track_mps for p in points], distances_m, window_m=window_m
+    )
+    gust_along_raw = [p.gust_along_track_mps for p in points]
+    gust_cross_raw = [p.gust_cross_track_mps for p in points]
+    if any(g is None for g in gust_along_raw):
+        gust_along = gust_along_raw
+        gust_cross = gust_cross_raw
+    else:
+        gust_along = smooth_elevations(
+            [float(g) for g in gust_along_raw], distances_m, window_m=window_m
+        )
+        gust_cross = smooth_elevations(
+            [float(g or 0.0) for g in gust_cross_raw], distances_m, window_m=window_m
+        )
+    out = []
+    for i, point in enumerate(points):
+        ga = gust_along[i]
+        gc = gust_cross[i]
+        out.append(
+            replace(
+                point,
+                along_track_mps=along[i],
+                cross_track_mps=cross[i],
+                gust_along_track_mps=None if ga is None else float(ga),
+                gust_cross_track_mps=None if gc is None else float(gc),
+            )
+        )
+    return out
 
 
 def _weather_bucket(when: datetime) -> datetime:
@@ -583,12 +658,14 @@ def predict_speeds(
     v0 = _initial_speed_mps(
         list(route.actual_speeds_mps) if route.has_actual_speeds else None
     )
+    gap_calm: list[float] = []
     speeds_calm = solve_speeds(
         params,
         grades,
         powers_w=powers_w,
         distances_m=route.distances_m,
         initial_speed_mps=v0,
+        gap_dt=gap_calm,
     )
 
     wind_along = [0.0] * len(route)
@@ -599,6 +676,7 @@ def predict_speeds(
     weather_message: str | None = None
     weather_source = "none"
     speeds_wind = list(speeds_calm)
+    gap_wind = list(gap_calm)
     params_used = params
     mean_wind_speed = 0.0
     mean_wind_from = 0.0
@@ -618,7 +696,10 @@ def predict_speeds(
             max_weather_samples=max_weather_samples,
             wind_height_m=wind_height_m,
         )
+        from bike_wind.calibration.cda_defaults import WIND_SMOOTH_M
+
         forecast = [_scale_forecast_point(fp, WIND_SCALE) for fp in wx.points]
+        forecast = _smooth_forecast(forecast, route.distances_m, WIND_SMOOTH_M)
         weather_source = wx.source
         weather_message = wx.message
         winds = [fp.wind for fp in forecast]
@@ -628,6 +709,7 @@ def predict_speeds(
         rho_mean = sum(rhos) / len(rhos)
         params_used = params.with_updates(rho=rho_mean)
         # Sustained wind drives the drawn speed line and ETA.
+        gap_wind: list[float] = []
         speeds_wind = solve_speeds(
             params_used,
             grades,
@@ -635,6 +717,7 @@ def predict_speeds(
             powers_w=powers_w,
             distances_m=route.distances_m,
             initial_speed_mps=v0,
+            gap_dt=gap_wind,
         )
         weather_ok = True
         if forecast:
@@ -688,6 +771,7 @@ def predict_speeds(
             "check network access to api.open-meteo.com."
         )
         speeds_wind = list(speeds_calm)
+        gap_wind = list(gap_calm)
 
     band = time_uncertainty_band(
         route.distances_m,
@@ -758,6 +842,8 @@ def predict_speeds(
         speeds_gust_high_mps=speeds_gust_high,
         speeds_gust_low_mps=speeds_gust_low,
         mean_gust_speed_mps=mean_gust_speed,
+        gap_dt_with_wind=gap_wind,
+        gap_dt_no_wind=gap_calm,
     )
 
 

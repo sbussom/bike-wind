@@ -17,7 +17,7 @@ from bike_wind.weather.open_meteo import (
     as_utc,
     nearest_hour_index,
     point_from_raw,
-    reproject_point,
+    points_along_route,
     sample_indices,
 )
 
@@ -76,11 +76,7 @@ def fetch_archive_along_route(
     except (requests.RequestException, KeyError, ValueError, IndexError) as exc:
         raise WeatherFetchError(f"Open-Meteo archive failed: {exc}") from exc
 
-    out: list[ForecastPoint] = []
-    for i in range(len(lats)):
-        nearest = min(sample_idxs, key=lambda s: abs(s - i))
-        out.append(reproject_point(samples[nearest], lats[i], lons[i], bearings_deg[i]))
-    return out
+    return points_along_route(samples, sample_idxs, lats, lons, bearings_deg)
 
 
 def _fetch_one_archive(

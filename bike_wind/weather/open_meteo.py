@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import bisect
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Sequence
 
@@ -128,11 +129,7 @@ def fetch_forecast_along_route(
     except (requests.RequestException, KeyError, ValueError, IndexError) as exc:
         raise WeatherFetchError(f"Open-Meteo forecast failed: {exc}") from exc
 
-    out: list[ForecastPoint] = []
-    for i in range(len(lats)):
-        nearest = min(sample_idxs, key=lambda s: abs(s - i))
-        out.append(reproject_point(samples[nearest], lats[i], lons[i], bearings_deg[i]))
-    return out
+    return points_along_route(samples, sample_idxs, lats, lons, bearings_deg)
 
 
 def fetch_one(
@@ -177,17 +174,33 @@ def fetch_one(
     times: list[str] = hourly["time"]
     ti = nearest_hour_index(times, when_utc)
     gusts = hourly.get("wind_gusts_10m")
-    gust_10 = float(gusts[ti]) if gusts else None
+    gust_10 = None
+    if gusts:
+        try:
+            gust_10 = float(gusts[ti])
+        except (TypeError, ValueError):
+            gust_10 = None
+        if gust_10 is not None and not math.isfinite(gust_10):
+            gust_10 = None
+
+    def _finite(series: list, idx: int) -> float:
+        try:
+            value = float(series[idx])
+        except (TypeError, ValueError, IndexError) as exc:
+            raise ValueError("forecast hour missing a finite value") from exc
+        if not math.isfinite(value):
+            raise ValueError("forecast hour missing a finite value")
+        return value
 
     raw = CachedForecastRaw(
         lat=lat,
         lon=lon,
         forecast_ts=forecast_ts,
         source=SOURCE_KEY,
-        temperature_c=float(hourly["temperature_2m"][ti]),
-        pressure_hpa=float(hourly["surface_pressure"][ti]),
-        u10_mps=float(hourly["wind_u_component_10m"][ti]),
-        v10_mps=float(hourly["wind_v_component_10m"][ti]),
+        temperature_c=_finite(hourly["temperature_2m"], ti),
+        pressure_hpa=_finite(hourly["surface_pressure"], ti),
+        u10_mps=_finite(hourly["wind_u_component_10m"], ti),
+        v10_mps=_finite(hourly["wind_v_component_10m"], ti),
         gust_10_mps=gust_10,
     )
     cache.put(raw)
@@ -284,6 +297,82 @@ def reproject_point(
     )
 
 
+def points_along_route(
+    samples: dict[int, ForecastPoint],
+    sample_idxs: Sequence[int],
+    lats: Sequence[float],
+    lons: Sequence[float],
+    bearings_deg: Sequence[float],
+) -> list[ForecastPoint]:
+    """Blend anchor wind in index, then project onto each sample's bearing.
+
+    Nearest-anchor assignment stepped the wind by several m/s between two
+    samples. A linear blend of the rider-height vector removes that jump.
+    """
+    anchors = sorted(sample_idxs)
+    out: list[ForecastPoint] = []
+    for i in range(len(lats)):
+        base = _blend_anchors(samples, anchors, i)
+        out.append(reproject_point(base, lats[i], lons[i], bearings_deg[i]))
+    return out
+
+
+def _blend_anchors(
+    samples: dict[int, ForecastPoint],
+    anchors: Sequence[int],
+    index: int,
+) -> ForecastPoint:
+    if not anchors:
+        raise ValueError("no wind anchors")
+    if len(anchors) == 1 or index <= anchors[0]:
+        return samples[anchors[0]]
+    if index >= anchors[-1]:
+        return samples[anchors[-1]]
+    hi = anchors[0]
+    lo = anchors[0]
+    for anchor in anchors:
+        if anchor >= index:
+            hi = anchor
+            break
+        lo = anchor
+    if hi == lo:
+        return samples[hi]
+    t = (index - lo) / (hi - lo)
+    return _lerp_point(samples[lo], samples[hi], t)
+
+
+def _lerp(a: float, b: float, t: float) -> float:
+    return (1.0 - t) * a + t * b
+
+
+def _lerp_opt(a: float | None, b: float | None, t: float) -> float | None:
+    if a is None and b is None:
+        return None
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return _lerp(a, b, t)
+
+
+def _lerp_point(a: ForecastPoint, b: ForecastPoint, t: float) -> ForecastPoint:
+    """Blend the free-stream vector. Bearing projection happens afterwards."""
+    return replace(
+        a,
+        lat=_lerp(a.lat, b.lat, t),
+        lon=_lerp(a.lon, b.lon, t),
+        temperature_c=_lerp(a.temperature_c, b.temperature_c, t),
+        pressure_hpa=_lerp(a.pressure_hpa, b.pressure_hpa, t),
+        u10_mps=_lerp(a.u10_mps, b.u10_mps, t),
+        v10_mps=_lerp(a.v10_mps, b.v10_mps, t),
+        u_rider_mps=_lerp(a.u_rider_mps, b.u_rider_mps, t),
+        v_rider_mps=_lerp(a.v_rider_mps, b.v_rider_mps, t),
+        rho=_lerp(a.rho, b.rho, t),
+        wind_speed_10m=_lerp_opt(a.wind_speed_10m, b.wind_speed_10m, t),
+        gust_speed_10m=_lerp_opt(a.gust_speed_10m, b.gust_speed_10m, t),
+    )
+
+
 def sample_indices(n: int, max_samples: int) -> list[int]:
     if n <= max_samples:
         return list(range(n))
@@ -304,18 +393,41 @@ def nearest_hour_index(times: Sequence[str], when_utc: datetime) -> int:
     return nearest_time_index(times, target)
 
 
-def nearest_time_index(times: Sequence[str], when_utc: datetime) -> int:
-    best_i = 0
-    best_dt: float | None = None
-    for i, t in enumerate(times):
+# Parsed once per series. Same index as the linear scan, including an exact
+# tie, which stays on the earlier stamp (`delta < best_dt`).
+_TIME_STAMPS: dict[int, list[float]] = {}
+
+
+def _series_stamps(times: Sequence[str]) -> list[float]:
+    key = id(times)
+    cached = _TIME_STAMPS.get(key)
+    if cached is not None and len(cached) == len(times):
+        return cached
+    stamps: list[float] = []
+    for t in times:
         parsed = datetime.fromisoformat(t.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
-        delta = abs((parsed - when_utc).total_seconds())
-        if best_dt is None or delta < best_dt:
-            best_dt = delta
-            best_i = i
-    return best_i
+        stamps.append(parsed.timestamp())
+    if len(_TIME_STAMPS) > 16:
+        _TIME_STAMPS.pop(next(iter(_TIME_STAMPS)))
+    _TIME_STAMPS[key] = stamps
+    return stamps
+
+
+def nearest_time_index(times: Sequence[str], when_utc: datetime) -> int:
+    if not times:
+        return 0
+    stamps = _series_stamps(times)
+    target = when_utc.timestamp()
+    i = bisect.bisect_left(stamps, target)
+    if i <= 0:
+        return 0
+    if i >= len(stamps):
+        return len(stamps) - 1
+    if target - stamps[i - 1] <= stamps[i] - target:
+        return i - 1
+    return i
 
 
 def past_days_for(when_utc: datetime, *, now: datetime | None = None) -> int:
@@ -370,11 +482,7 @@ def fetch_forecast_15min_along_route(
     except (requests.RequestException, KeyError, ValueError, IndexError) as exc:
         raise WeatherFetchError(f"Open-Meteo 15-min forecast failed: {exc}") from exc
 
-    out: list[ForecastPoint] = []
-    for i in range(len(lats)):
-        nearest = min(sample_idxs, key=lambda s: abs(s - i))
-        out.append(reproject_point(samples[nearest], lats[i], lons[i], bearings_deg[i]))
-    return out
+    return points_along_route(samples, sample_idxs, lats, lons, bearings_deg)
 
 
 def fetch_one_15min(

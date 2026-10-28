@@ -8,6 +8,11 @@ held-out moving MAE (actual speed > 3 mph) versus the previous live model
 
 The latest 25% of rides, from 2025-12-26, were not used to train.
 Hold-out moving MAE: 2.298 mph before, 2.292 mph after.
+
+A later time-error refit (CdA 0.48, Crr 0.0075, same 78 kg) cut held-out
+time error but raised held-out speed MAE, so these coefficients stayed.
+0 W is coasting (momentum), not a 0.1 m/s crawl. Anchor wind is blended,
+then smoothed over ``WIND_SMOOTH_M``.
 """
 
 from __future__ import annotations
@@ -28,6 +33,10 @@ YAW_K = 1.5
 # The sustained vector is then scaled. Gusts use the same scale and stay a band.
 WIND_TIME_RESOLVED = True
 WIND_SCALE = 0.75
+# Centered distance smooth on along- and cross-track wind after the anchors
+# are blended. Kills single-sample bearing flicker without flattening a
+# real headwind on an out-and-back leg. 0 disables it.
+WIND_SMOOTH_M = 150.0
 
 
 def cda_in_use() -> float:

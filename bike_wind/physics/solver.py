@@ -74,21 +74,33 @@ def solve_speeds(
     distances_m: Sequence[float] | None = None,
     *,
     initial_speed_mps: float | None = None,
+    gap_dt: list[float] | None = None,
 ) -> list[float]:
     """Ground speed at each sample (m/s).
 
     When ``distances_m`` is provided, integrate along the route with inertia:
-    ``a = F_net / m`` from power, aero, rolling, and grade — speed approaches
-    the steady-state value instead of jumping to it. Without distances, each
-    sample is solved at equilibrium (legacy / unit helpers).
+    ``a = F_net / m`` from power, aero, rolling, and grade. Positive power
+    may be capped at the steady-state speed so a coarse step cannot jump
+    past equilibrium. **0 W is coasting**: momentum is carried and the bike
+    slows under drag, rolling resistance, and gravity. There is no steady-state
+    solve at 0 W, and speed is not snapped to a stop.
+
+    Without distances, each sample is solved at equilibrium (legacy / unit
+    helpers). A 0 W sample then has no propulsion; the helper still reports
+    the force balance, which is 0 m/s on flat ground.
 
     ``powers_w``: finite values are used as-is, including **0 W coasting**.
     Non-finite samples fall back to ``params.power_w``. (A previous bug treated
     0 W as missing and substituted the default sustained watts.)
 
     ``initial_speed_mps``: optional start state for inertia (e.g. recorded speed
-    at the first sample on a known effort). When omitted, starts at the first
-    sample's steady-state speed.
+    at the first sample on a known effort). When omitted, a powered first
+    sample starts at its steady speed and a 0 W first sample starts from rest.
+
+    ``gap_dt``: if a list is passed, it is replaced with the seconds spent
+    crossing each gap (length ``n - 1``). Time is the integral of ``dt`` while
+    the bike is actually moving. A gap that runs out of speed contributes only
+    the seconds until it stops — not a crawl of the leftover distance.
     """
     n = len(grades)
     if winds is None:
@@ -108,13 +120,17 @@ def solve_speeds(
             for pp, g, w in zip(point_params, grades, winds)
         ]
 
-    return _integrate_speeds(
+    speeds, dts = _integrate_speeds(
         point_params,
         grades,
         winds,
         distances_m,
         initial_speed_mps=initial_speed_mps,
     )
+    if gap_dt is not None:
+        gap_dt.clear()
+        gap_dt.extend(dts)
+    return speeds
 
 
 def _point_params(
@@ -142,68 +158,127 @@ def _integrate_speeds(
     distances_m: Sequence[float],
     *,
     initial_speed_mps: float | None = None,
-) -> list[float]:
-    """Euler integration: dv/dt = F_net/m along successive distance samples."""
+) -> tuple[list[float], list[float]]:
+    """Integrate dv/dt = F_net/m. Returns speeds and per-gap moving seconds.
+
+    0 W never calls the steady-state solver. The bike keeps its speed and
+    sheds it only as drag, rolling resistance, and gravity require. A powered
+    step may be capped at that step's equilibrium so one coarse distance
+    chunk cannot leap past the force balance.
+    """
     n = len(grades)
     speeds = [0.0] * n
+    gap_dt = [0.0] * max(0, n - 1)
     if (
         initial_speed_mps is not None
         and math.isfinite(initial_speed_mps)
         and initial_speed_mps >= 0.0
     ):
-        # Known effort: use the recorded start speed as the integrator state.
         speeds[0] = min(_V_MAX_MPS, float(initial_speed_mps))
-    else:
+    elif point_params[0].power_w > 0.0:
         speeds[0] = solve_speed(point_params[0], grade=grades[0], wind=winds[0])
         if speeds[0] < _V_MIN_MPS:
-            speeds[0] = _V_MIN_MPS if point_params[0].power_w > 0.0 else 0.0
+            speeds[0] = _V_MIN_MPS
+    else:
+        # Planned or recorded 0 W with no known start speed: start from rest.
+        speeds[0] = 0.0
 
     for i in range(n - 1):
         dd = float(distances_m[i + 1]) - float(distances_m[i])
         v = speeds[i]
         if dd <= 0.0:
             speeds[i + 1] = v
+            gap_dt[i] = 0.0
             continue
-        # Conditions at the destination sample (power/grade/wind at i+1).
         pp = point_params[i + 1]
-        grade = grades[i + 1]
+        grade = float(grades[i + 1])
         wind = winds[i + 1]
-        v_eq = solve_speed(pp, grade=grade, wind=wind)
-        mass = max(pp.total_mass_kg, 1.0)
-        eta = pp.drivetrain_efficiency if pp.drivetrain_efficiency > 0.0 else 1.0
         power = max(0.0, float(pp.power_w))
-
+        # Equilibrium cap only while pedaling. Coasting has no target speed.
+        v_eq: float | None
+        if power > 0.0:
+            v_eq = solve_speed(pp, grade=grade, wind=wind)
+        else:
+            v_eq = None
         remaining = dd
-        while remaining > 1e-9:
+        spent = 0.0
+        guard = 0
+        while remaining > 1e-6 and guard < 10000:
+            guard += 1
             step = min(remaining, _INTEGRATE_STEP_M)
-            if v <= 0.0 and v_eq <= 0.0:
-                v = 0.0
+            v, dt, covered = _coast_step(v, step, pp, grade, wind, power, v_eq)
+            spent += dt
+            if covered <= 1e-8:
+                # Out of speed with distance left. That is a real stop for
+                # this gap, not a 0.1 m/s crawl of the rest of it.
                 break
-            v_state = max(v, _V_MIN_MPS) if v > 0.0 or power > 0.0 else 0.0
-            if v_state <= 0.0:
-                v = 0.0
-                break
-            v_drive = max(v_state, _V_DRIVE_FLOOR_MPS)
-            f_drive = (eta * power) / v_drive
-            f_resist = total_force(v_state, pp, grade=grade, wind=wind)
-            # Acceleration capped exactly by this force balance (no extra boost).
-            a = (f_drive - f_resist) / mass
-            dt = step / v_state
-            v_new = v_state + a * dt
-            # Approach steady state; do not jump past equilibrium in one step.
-            if v_eq > v_state:
-                v_new = min(v_new, v_eq)
-            elif v_eq < v_state:
-                v_new = max(v_new, v_eq)
-            if v_eq <= 0.0 and v_new < _V_MIN_MPS:
-                v_new = 0.0
-            else:
-                v_new = min(_V_MAX_MPS, max(_V_MIN_MPS if v_eq > 0.0 else 0.0, v_new))
-            v = v_new
-            remaining -= step
+            remaining -= covered
         speeds[i + 1] = v
+        gap_dt[i] = spent
 
-    return speeds
+    return speeds, gap_dt
+
+
+def _coast_step(
+    v: float,
+    step: float,
+    params: RiderBikeParams,
+    grade: float,
+    wind: WindComponents,
+    power: float,
+    v_eq: float | None,
+) -> tuple[float, float, float]:
+    """Advance up to ``step`` meters. Returns ``(v_new, dt, covered)``."""
+    v = 0.0 if not math.isfinite(v) or v < 0.0 else min(_V_MAX_MPS, v)
+    a = _accel(v, params, grade, wind, power)
+    if v <= 1e-4 and a <= 1e-4:
+        return 0.0, 0.0, 0.0
+    # Constant-acceleration kinematics over this chunk: s = v t + ½ a t².
+    if abs(a) < 1e-8:
+        dt = step / v
+        return v, dt, step
+    disc = v * v + 2.0 * a * step
+    if disc <= 0.0:
+        # Stops inside the chunk. Time to v=0 is finite; leftover distance
+        # is not ridden.
+        dt = v / (-a) if a < 0.0 else 0.0
+        covered = max(0.0, v * dt + 0.5 * a * dt * dt)
+        return 0.0, dt, covered
+    dt = (-v + math.sqrt(disc)) / a
+    if dt < 0.0:
+        dt = step / max(v, 1e-3)
+    v_new = v + a * dt
+    if v_eq is not None and v_eq >= 0.0:
+        # Do not cross the powered equilibrium inside one chunk.
+        if v_eq > v:
+            v_new = min(v_new, v_eq)
+        elif v_eq < v:
+            v_new = max(v_new, v_eq)
+    if v_new < 0.0:
+        v_new = 0.0
+    elif v_new > _V_MAX_MPS:
+        v_new = _V_MAX_MPS
+    return v_new, max(0.0, dt), step
+
+
+def _accel(
+    v: float,
+    params: RiderBikeParams,
+    grade: float,
+    wind: WindComponents,
+    power: float,
+) -> float:
+    """Along-track acceleration (m/s²). Positive speeds the bike up."""
+    mass = max(params.total_mass_kg, 1.0)
+    if power > 0.0:
+        eta = params.drivetrain_efficiency if params.drivetrain_efficiency > 0.0 else 1.0
+        f_drive = (eta * power) / max(v, _V_DRIVE_FLOOR_MPS)
+        v_force = max(v, _V_MIN_MPS)
+    else:
+        f_drive = 0.0
+        v_force = max(v, 0.0)
+    f_resist = total_force(v_force, params, grade=grade, wind=wind)
+    return (f_drive - f_resist) / mass
 
 
 def _force_positive(

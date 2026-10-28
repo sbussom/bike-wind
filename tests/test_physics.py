@@ -227,6 +227,71 @@ def test_inertia_power_step_approaches_equilibrium() -> None:
     assert speeds[-1] > 0.5 * (v_lo + v_hi)
 
 
+def test_short_coast_keeps_momentum() -> None:
+    """A brief 0 W must not collapse to a stop or a 0.1 m/s crawl."""
+    from bike_wind.analysis import eta_seconds
+
+    p = _flat_params(power_w=250.0)
+    v0 = solve_speed(_flat_params(power_w=250.0), grade=0.0)
+    # 1 Hz-ish: 8 m gaps, five seconds of coast after a cruise.
+    n = 12
+    distances = [float(i * 8) for i in range(n)]
+    grades = [0.0] * n
+    powers = [250.0] * 6 + [0.0] * (n - 6)
+    gap: list[float] = []
+    speeds = solve_speeds(
+        p,
+        grades,
+        powers_w=powers,
+        distances_m=distances,
+        initial_speed_mps=v0,
+        gap_dt=gap,
+    )
+    # Still rolling at the end of a 48 m coast. Steady-state 0 W is a stop.
+    assert speeds[-1] > 3.0
+    assert min(speeds[6:]) > 3.0
+    # Time is a few seconds, not distance / 0.1 m/s.
+    elapsed = eta_seconds(distances, speeds, gap_dt=gap)
+    assert elapsed < 40.0
+    crawl = sum(
+        (distances[i + 1] - distances[i]) / 0.1 for i in range(len(distances) - 1)
+    )
+    assert elapsed < crawl * 0.25
+
+
+def test_planned_zero_watts_is_coasting() -> None:
+    """A planned 0 W segment uses the same integrator: coast, don't false-stop."""
+    p = _flat_params(power_w=200.0)
+    v0 = solve_speed(_flat_params(power_w=200.0), grade=0.0)
+    n = 16
+    distances = [float(i * 10) for i in range(n)]
+    grades = [0.0] * n
+    powers = [200.0] * 4 + [0.0] * 6 + [200.0] * (n - 10)
+    speeds = solve_speeds(
+        p,
+        grades,
+        powers_w=powers,
+        distances_m=distances,
+        initial_speed_mps=v0,
+    )
+    # Mid-coast sample is still near the cruise, not under 0.5 m/s.
+    assert speeds[7] > 0.7 * v0
+    # Power coming back does not require a standing start.
+    assert speeds[11] > 2.0
+
+
+def test_recorded_stop_is_not_moving_time() -> None:
+    from bike_wind.analysis import eta_seconds
+
+    distances = [0.0, 10.0, 10.2, 20.0]
+    speeds = [8.0, 0.0, 8.0, 8.0]
+    # Middle gap is a recorded stop (actual < 0.5). It must not add crawl time.
+    actual = [8.0, 0.1, 8.0, 8.0]
+    moving = eta_seconds(distances, speeds, actual_speeds_mps=actual)
+    # 10 m at 8 m/s + ~10 m at 8 m/s. The 0.2 m stop is excluded.
+    assert moving == pytest.approx(20.0 / 8.0, rel=0.05)
+
+
 def test_zero_watts_coasts_not_default_power() -> None:
     """Recorded 0 W must coast; must not substitute sustained params.power_w."""
     p = _flat_params(power_w=250.0)
