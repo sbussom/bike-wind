@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
 from bike_wind.analysis import (
@@ -22,8 +22,8 @@ from bike_wind.local_wind_map import format_wind_speed_dir, wind_from_uv
 from bike_wind.physics.constants import RIDER_HEIGHT_M
 from bike_wind.physics.forces import RiderBikeParams, WindComponents
 from bike_wind.physics.solver import solve_speeds
-from bike_wind.weather.fetch import fetch_weather_along_route
-from bike_wind.weather.open_meteo import WeatherFetchError
+from bike_wind.weather.fetch import WeatherFetchResult, fetch_weather_along_route
+from bike_wind.weather.open_meteo import ForecastPoint, WeatherFetchError, as_utc
 
 MPS_TO_MPH = 2.236936
 
@@ -432,6 +432,114 @@ def apply_what_if(
     )
 
 
+def _weather_bucket(when: datetime) -> datetime:
+    """Time the app's weather source can actually resolve.
+
+    Older than 90 days: the archive hour (floored). Otherwise the 15-minute
+    slot (floored). Matches Open-Meteo's products in ``fetch_weather_along_route``.
+    """
+    when = as_utc(when)
+    now = datetime.now(timezone.utc)
+    if now - when > timedelta(days=90):
+        return when.replace(minute=0, second=0, microsecond=0)
+    minute = (when.minute // 15) * 15
+    return when.replace(minute=minute, second=0, microsecond=0)
+
+
+def _scale_forecast_point(fp: ForecastPoint, scale: float) -> ForecastPoint:
+    """Scale the sustained wind and the gust the same way. Rho stays put."""
+    if scale == 1.0:
+        return fp
+
+    def _sc(value: float | None) -> float | None:
+        if value is None:
+            return None
+        return float(value) * scale
+
+    return replace(
+        fp,
+        u10_mps=fp.u10_mps * scale,
+        v10_mps=fp.v10_mps * scale,
+        u_rider_mps=fp.u_rider_mps * scale,
+        v_rider_mps=fp.v_rider_mps * scale,
+        along_track_mps=fp.along_track_mps * scale,
+        cross_track_mps=fp.cross_track_mps * scale,
+        gust_along_track_mps=_sc(fp.gust_along_track_mps),
+        gust_cross_track_mps=_sc(fp.gust_cross_track_mps),
+        wind_speed_10m=_sc(fp.wind_speed_10m),
+        gust_speed_10m=_sc(fp.gust_speed_10m),
+    )
+
+
+def _load_forecast(
+    route: RouteStreams,
+    bearings: list[float],
+    weather_when: datetime,
+    *,
+    prefer_hrrr: bool,
+    use_archive: bool,
+    max_weather_samples: int,
+    wind_height_m: float,
+) -> WeatherFetchResult:
+    """Wind along the route. With recorded times, one lookup per weather slot."""
+    from bike_wind.calibration.cda_defaults import WIND_TIME_RESOLVED
+
+    times = route.times_utc
+    if not (WIND_TIME_RESOLVED and times and len(times) == len(route)):
+        return fetch_weather_along_route(
+            route.lats,
+            route.lons,
+            bearings,
+            weather_when,
+            prefer_hrrr=prefer_hrrr,
+            use_archive=use_archive,
+            max_samples=max_weather_samples,
+            z_m=wind_height_m,
+        )
+
+    groups: dict[datetime, list[int]] = {}
+    for i, stamp in enumerate(times):
+        key = _weather_bucket(stamp if stamp is not None else weather_when)
+        groups.setdefault(key, []).append(i)
+    if len(groups) == 1:
+        when = next(iter(groups))
+        return fetch_weather_along_route(
+            route.lats,
+            route.lons,
+            bearings,
+            when,
+            prefer_hrrr=prefer_hrrr,
+            use_archive=use_archive,
+            max_samples=max_weather_samples,
+            z_m=wind_height_m,
+        )
+
+    points: list[ForecastPoint | None] = [None] * len(route)
+    sources: list[str] = []
+    message: str | None = None
+    for when in sorted(groups):
+        wx = fetch_weather_along_route(
+            route.lats,
+            route.lons,
+            bearings,
+            when,
+            prefer_hrrr=prefer_hrrr,
+            use_archive=use_archive,
+            max_samples=max_weather_samples,
+            z_m=wind_height_m,
+        )
+        sources.append(wx.source)
+        if wx.message:
+            message = wx.message
+        for i in groups[when]:
+            points[i] = wx.points[i]
+    if any(p is None for p in points):
+        raise WeatherFetchError("Time-resolved wind left a gap on the route")
+    filled = [p for p in points if p is not None]
+    source = sources[0] if len(set(sources)) == 1 else "open-meteo-time-resolved"
+    return WeatherFetchResult(points=filled, source=source, message=message)
+
+
 def predict_speeds(
     route: RouteStreams,
     params: RiderBikeParams,
@@ -448,9 +556,11 @@ def predict_speeds(
 
     Grade (rise/run from elevation) is always passed into the ground-speed
     solver. When the route has a recorded start time and
-    ``prefer_ride_start_time`` is True, weather is fetched for that instant
-    instead of ``when``. When the route has power-meter ``watts``, those drive
-    the model; otherwise ``params.power_w`` is used.
+    ``prefer_ride_start_time`` is True, weather uses that clock instead of
+    ``when``. Recorded times are resolved per sample (15-min or archive hour).
+    Sustained wind, scaled by the held-out factor, drives the line. Gusts are
+    the same direction at gust speed and only form a band. When the route has
+    power-meter ``watts``, those drive the model; otherwise ``params.power_w``.
     """
     grades = route.grades()
     bearings = route.bearings_deg()
@@ -497,17 +607,18 @@ def predict_speeds(
     mean_gust_speed: float | None = None
 
     try:
-        wx = fetch_weather_along_route(
-            route.lats,
-            route.lons,
+        from bike_wind.calibration.cda_defaults import WIND_SCALE
+
+        wx = _load_forecast(
+            route,
             bearings,
             weather_when,
             prefer_hrrr=prefer_hrrr and not use_archive,
             use_archive=use_archive,
-            max_samples=max_weather_samples,
-            z_m=wind_height_m,
+            max_weather_samples=max_weather_samples,
+            wind_height_m=wind_height_m,
         )
-        forecast = wx.points
+        forecast = [_scale_forecast_point(fp, WIND_SCALE) for fp in wx.points]
         weather_source = wx.source
         weather_message = wx.message
         winds = [fp.wind for fp in forecast]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
 import requests
@@ -127,25 +127,66 @@ def _fetch_one_archive(
     hourly = payload["hourly"]
     times: list[str] = hourly["time"]
     ti = nearest_hour_index(times, when_utc)
-    speed = float(hourly["wind_speed_10m"][ti])
-    direction = float(hourly["wind_direction_10m"][ti])
-    u10, v10 = speed_dir_to_uv(speed, direction)
+    rows: list[CachedForecastRaw] = []
+    requested: CachedForecastRaw | None = None
     pressure = hourly.get("surface_pressure")
-    pressure_hpa = float(pressure[ti]) if pressure else 1013.25
-    temp = float(hourly["temperature_2m"][ti])
     gusts = hourly.get("wind_gusts_10m")
-    gust_10 = float(gusts[ti]) if gusts else None
-
-    raw = CachedForecastRaw(
-        lat=lat,
-        lon=lon,
-        forecast_ts=forecast_ts,
-        source=SOURCE_KEY,
-        temperature_c=temp,
-        pressure_hpa=pressure_hpa,
-        u10_mps=u10,
-        v10_mps=v10,
-        gust_10_mps=gust_10,
-    )
-    cache.put(raw)
-    return point_from_raw(raw, lat, lon, bearing_deg, z_m=z_m, z0_m=z0_m)
+    for i, stamp in enumerate(times):
+        try:
+            speed = float(hourly["wind_speed_10m"][i])
+            direction = float(hourly["wind_direction_10m"][i])
+            temp = float(hourly["temperature_2m"][i])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not (math.isfinite(speed) and math.isfinite(direction) and math.isfinite(temp)):
+            continue
+        u10, v10 = speed_dir_to_uv(speed, direction)
+        pressure_hpa = 1013.25
+        if pressure is not None:
+            try:
+                pressure_hpa = float(pressure[i])
+            except (TypeError, ValueError, IndexError):
+                pressure_hpa = 1013.25
+        gust_10 = None
+        if gusts is not None:
+            try:
+                gust_10 = float(gusts[i])
+            except (TypeError, ValueError, IndexError):
+                gust_10 = None
+            if gust_10 is not None and not math.isfinite(gust_10):
+                gust_10 = None
+        slot = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        if slot.tzinfo is None:
+            slot = slot.replace(tzinfo=timezone.utc)
+        raw = CachedForecastRaw(
+            lat=lat,
+            lon=lon,
+            forecast_ts=ForecastCache.hour_key(slot),
+            source=SOURCE_KEY,
+            temperature_c=temp,
+            pressure_hpa=pressure_hpa,
+            u10_mps=u10,
+            v10_mps=v10,
+            gust_10_mps=gust_10,
+        )
+        rows.append(raw)
+        if i == ti:
+            requested = raw
+    if requested is None:
+        raise ValueError("archive hour missing wind")
+    if requested.forecast_ts != forecast_ts:
+        rows.append(
+            CachedForecastRaw(
+                lat=lat,
+                lon=lon,
+                forecast_ts=forecast_ts,
+                source=SOURCE_KEY,
+                temperature_c=requested.temperature_c,
+                pressure_hpa=requested.pressure_hpa,
+                u10_mps=requested.u10_mps,
+                v10_mps=requested.v10_mps,
+                gust_10_mps=requested.gust_10_mps,
+            )
+        )
+    cache.put_many(rows)
+    return point_from_raw(requested, lat, lon, bearing_deg, z_m=z_m, z0_m=z0_m)

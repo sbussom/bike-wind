@@ -132,13 +132,37 @@ class ForecastCache:
         )
 
     def put(self, raw: CachedForecastRaw, *, fetched_at: float | None = None) -> None:
+        self.put_many([raw], fetched_at=fetched_at)
+
+    def put_many(
+        self,
+        rows: list[CachedForecastRaw],
+        *,
+        fetched_at: float | None = None,
+    ) -> None:
+        """Insert many slots in one transaction (a full hourly or 15-min series)."""
+        if not rows:
+            return
         import time
 
         fetched_at = time.time() if fetched_at is None else fetched_at
-        lat_k = self.round_coord(raw.lat)
-        lon_k = self.round_coord(raw.lon)
+        payload = [
+            (
+                self.round_coord(raw.lat),
+                self.round_coord(raw.lon),
+                raw.forecast_ts,
+                raw.source,
+                raw.temperature_c,
+                raw.pressure_hpa,
+                raw.u10_mps,
+                raw.v10_mps,
+                fetched_at,
+                raw.gust_10_mps,
+            )
+            for raw in rows
+        ]
         with self._connect() as conn:
-            conn.execute(
+            conn.executemany(
                 """
                 INSERT INTO forecasts (
                     lat_key, lon_key, forecast_ts, source,
@@ -153,16 +177,5 @@ class ForecastCache:
                     fetched_at=excluded.fetched_at,
                     gust_10_mps=excluded.gust_10_mps
                 """,
-                (
-                    lat_k,
-                    lon_k,
-                    raw.forecast_ts,
-                    raw.source,
-                    raw.temperature_c,
-                    raw.pressure_hpa,
-                    raw.u10_mps,
-                    raw.v10_mps,
-                    fetched_at,
-                    raw.gust_10_mps,
-                ),
+                payload,
             )

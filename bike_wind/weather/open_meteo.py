@@ -421,38 +421,80 @@ def fetch_one_15min(
     if len(times) < 2:
         raise ValueError("minutely_15 series empty")
     ti = nearest_time_index(times, when_utc)
-    speed = float(m15["wind_speed_10m"][ti])
-    direction = float(m15["wind_direction_10m"][ti])
-    # Meteorological FROM → U east / V north
-    rad = math.radians(direction)
-    u10 = -speed * math.sin(rad)
-    v10 = -speed * math.cos(rad)
-    temp = float(m15["temperature_2m"][ti])
+    speeds = m15["wind_speed_10m"]
+    directions = m15["wind_direction_10m"]
+    temps = m15["temperature_2m"]
     gusts = m15.get("wind_gusts_10m")
-    gust_10 = float(gusts[ti]) if gusts else None
-
-    pressure_hpa = 1013.25
     hourly = payload.get("hourly") or {}
     h_times = list(hourly.get("time") or [])
     h_press = hourly.get("surface_pressure")
-    if h_times and h_press:
-        hi = nearest_hour_index(h_times, when_utc)
-        pressure_hpa = float(h_press[hi])
 
-    raw = CachedForecastRaw(
-        lat=lat,
-        lon=lon,
-        forecast_ts=forecast_ts,
-        source=SOURCE_KEY_15MIN,
-        temperature_c=temp,
-        pressure_hpa=pressure_hpa,
-        u10_mps=u10,
-        v10_mps=v10,
-        gust_10_mps=gust_10,
-    )
-    # Always write the finer slot — upgrades a prior hourly-only cache for this place/time.
-    cache.put(raw)
-    return point_from_raw(raw, lat, lon, bearing_deg, z_m=z_m, z0_m=z0_m)
+    rows: list[CachedForecastRaw] = []
+    requested: CachedForecastRaw | None = None
+    for i, stamp in enumerate(times):
+        try:
+            speed = float(speeds[i])
+            direction = float(directions[i])
+            temp = float(temps[i])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not (math.isfinite(speed) and math.isfinite(direction) and math.isfinite(temp)):
+            continue
+        rad = math.radians(direction)
+        u10 = -speed * math.sin(rad)
+        v10 = -speed * math.cos(rad)
+        gust_10 = None
+        if gusts is not None:
+            try:
+                gust_10 = float(gusts[i])
+            except (TypeError, ValueError, IndexError):
+                gust_10 = None
+            if gust_10 is not None and not math.isfinite(gust_10):
+                gust_10 = None
+        slot = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        if slot.tzinfo is None:
+            slot = slot.replace(tzinfo=timezone.utc)
+        pressure_hpa = 1013.25
+        if h_times and h_press:
+            hi = nearest_hour_index(h_times, slot)
+            try:
+                pressure_hpa = float(h_press[hi])
+            except (TypeError, ValueError, IndexError):
+                pressure_hpa = 1013.25
+        raw = CachedForecastRaw(
+            lat=lat,
+            lon=lon,
+            forecast_ts=ForecastCache.quarter_key(slot),
+            source=SOURCE_KEY_15MIN,
+            temperature_c=temp,
+            pressure_hpa=pressure_hpa,
+            u10_mps=u10,
+            v10_mps=v10,
+            gust_10_mps=gust_10,
+        )
+        rows.append(raw)
+        if i == ti:
+            requested = raw
+    if requested is None:
+        raise ValueError("minutely_15 slot missing wind")
+    # One response fills every quarter so later samples on this ride hit the cache.
+    # Keep the caller's key too, in case it differs by a few minutes from the slot.
+    if requested.forecast_ts != forecast_ts:
+        rows.append(
+            CachedForecastRaw(
+                lat=lat,
+                lon=lon,
+                forecast_ts=forecast_ts,
+                source=SOURCE_KEY_15MIN,
+                temperature_c=requested.temperature_c,
+                pressure_hpa=requested.pressure_hpa,
+                u10_mps=requested.u10_mps,
+                v10_mps=requested.v10_mps,
+                gust_10_mps=requested.gust_10_mps,
+            )
+        )
+    cache.put_many(rows)
+    return point_from_raw(requested, lat, lon, bearing_deg, z_m=z_m, z0_m=z0_m)
 
 
 # Back-compat aliases used by hrrr module

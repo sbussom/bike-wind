@@ -26,7 +26,7 @@ CLOTHING_PRESETS: dict[str, ClothingPreset] = {
         key="skin_tight_aero",
         label="Full skin-tight aero",
         cda_multiplier=1.0,
-        note="Baseline Cd·A (fitted ~0.408 for gravel hoods).",
+        note="Baseline Cd·A (in use 0.380 for gravel hoods).",
     ),
     "loose_jersey": ClothingPreset(
         key="loose_jersey",

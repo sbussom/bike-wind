@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from bike_wind.gpx.parse import RouteStreams, parse_gpx, speeds_from_times
 from bike_wind.predict import downsample_route, predict_speeds
 from bike_wind.physics.forces import RiderBikeParams
@@ -249,3 +251,63 @@ def test_predict_without_watts_has_no_power_series(monkeypatch) -> None:
     result = predict_speeds(route, params, route.start_time)  # type: ignore[arg-type]
     assert not result.has_watts
     assert result.watts is None
+
+
+def test_time_resolved_wind_scales_and_splits_hours(monkeypatch) -> None:
+    """Held-out wind handling: each hour, then ×0.75. Gusts stay a band."""
+    calls: list[datetime] = []
+
+    def fake_wx(lats, lons, bearings, when, **kwargs):
+        from bike_wind.weather.fetch import WeatherFetchResult
+        from bike_wind.weather.open_meteo import ForecastPoint
+
+        calls.append(when)
+        n = len(lats)
+        pts = [
+            ForecastPoint(
+                lat=lats[i],
+                lon=lons[i],
+                temperature_c=25.0,
+                pressure_hpa=1013.0,
+                u10_mps=2.0,
+                v10_mps=0.0,
+                u_rider_mps=1.6,
+                v_rider_mps=0.0,
+                rho=1.2,
+                along_track_mps=1.0,
+                cross_track_mps=0.4,
+                gust_along_track_mps=1.5,
+                gust_cross_track_mps=0.6,
+                wind_speed_10m=2.0,
+                gust_speed_10m=3.0,
+            )
+            for i in range(n)
+        ]
+        return WeatherFetchResult(points=pts, source="open-meteo-archive")
+
+    monkeypatch.setattr("bike_wind.predict.fetch_weather_along_route", fake_wx)
+    t0 = datetime(2024, 6, 1, 14, 0, tzinfo=timezone.utc)
+    route = RouteStreams(
+        lats=[26.1, 26.11, 26.12],
+        lons=[-80.1, -80.1, -80.1],
+        elevs_m=[2.0, 3.0, 5.0],
+        distances_m=[0.0, 5000.0, 10000.0],
+        times_utc=[t0, t0 + timedelta(hours=2), t0 + timedelta(hours=2, minutes=10)],
+        actual_speeds_mps=[6.0, 6.0, 6.0],
+        watts=[180.0, 180.0, 180.0],
+    )
+    params = RiderBikeParams(
+        rider_mass_kg=69.0, power_w=180.0, cd=1.0, area_m2=0.38, crr=0.0075
+    )
+    result = predict_speeds(route, params, t0)
+    assert calls == [t0, t0 + timedelta(hours=2)]
+    assert result.winds[0].along_track == pytest.approx(0.75)
+    assert result.winds[0].cross_track == pytest.approx(0.3)
+    assert result.winds[1].along_track == pytest.approx(0.75)
+    assert result.has_gust_band
+    assert result.speeds_gust_high_mps is not None
+    assert result.speeds_gust_low_mps is not None
+    # Gusts bracket the sustained line. The line is not the recorded speed.
+    assert result.speeds_gust_low_mps[2] <= result.speeds_with_wind_mps[2]
+    assert result.speeds_with_wind_mps[2] <= result.speeds_gust_high_mps[2]
+    assert result.speeds_with_wind_mps[2] != result.actual_speeds_mps[2]

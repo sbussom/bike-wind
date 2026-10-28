@@ -122,6 +122,8 @@ def explain_prediction(
         DEFAULT_CDA,
         FITTED_CDA,
         USE_FITTED_CDA,
+        WIND_SCALE,
+        WIND_TIME_RESOLVED,
         YAW_CDA_ENABLED,
         cda_fit_label,
     )
@@ -162,8 +164,9 @@ def explain_prediction(
                 f"({'applied' if USE_FITTED_CDA else 'held out — not applied'})."
             ),
             plain=(
-                "Least-squares Cd·A on device-power train rides (Crr fixed at 0.008); "
-                "applied only when 2024+ hold-out moving MAE dropped."
+                "Personal Cd·A 0.380 with Crr 0.0075, fit on the earlier 2026 "
+                "measured-power rides. Kept because the later rides' moving error "
+                "dropped (2.31 mph to 2.24 mph). Yaw drag stayed off."
             ),
         ),
         EquationLine(
@@ -175,7 +178,20 @@ def explain_prediction(
                 f"(+tail / −head), cross {abs(wind.cross_track) * MPS_TO_MPH:.1f} mph."
                 f"{gust_note}"
             ),
-            plain="Sustained wind sets the predicted line and ETA; gusts only widen the band.",
+            plain=(
+                "Sustained wind "
+                + (
+                    "is looked up at each sample's time"
+                    if WIND_TIME_RESOLVED
+                    else "uses one time for the route"
+                )
+                + (
+                    f", then ×{WIND_SCALE:.2f},"
+                    if WIND_SCALE != 1.0
+                    else ""
+                )
+                + " and sets the predicted line. Gusts only widen the band."
+            ),
         ),
         EquationLine(
             title="Forces at predicted speed",

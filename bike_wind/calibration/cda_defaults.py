@@ -1,25 +1,32 @@
-"""CdA / yaw defaults from the held-out calibration gate.
+"""CdA / yaw / wind defaults from the held-out calibration gate.
 
-``FITTED_CDA`` is always the least-squares train estimate (Crr fixed at
-packed-sand 0.008). ``USE_FITTED_CDA`` and ``YAW_CDA_ENABLED`` are True only
-when that change dropped 2024+ hold-out moving MAE vs current main
-(100 m elev smooth, CdA 0.408, no yaw).
+``FITTED_CDA`` is the personal drag area from the earlier of the 57
+measured-power rides (Jul–Oct 2026). ``USE_FITTED_CDA`` is True only because
+that fit, with the wind handling below, lowered later-ride hold-out moving
+MAE (actual speed > 3 mph) versus CdA 0.408, Crr 0.008, yaw off, and a
+single ride-start wind snapshot.
+
+Hold-out moving MAE: 2.314 mph before, 2.244 mph after.
 """
 
 from __future__ import annotations
 
-# Preset gravel-hoods Cd·A (cd=1.0 × area).
+# Preset gravel-hoods Cd·A (cd=1.0 × area) before the personal fit.
 DEFAULT_CDA = 0.408
 
-# Least-squares train Cd·A (Crr=0.008, elev=100 m, calm). Not applied:
-# hold-out MAE 2.484 > baseline 2.444.
-FITTED_CDA = 0.32
+# Train optimum under time-resolved wind ×0.75. Applied: hold-out MAE dropped.
+FITTED_CDA = 0.38
 
-# Gate results — both False: hold-out MAE did not drop.
-USE_FITTED_CDA = False
+USE_FITTED_CDA = True
 YAW_CDA_ENABLED = False
 
 YAW_K = 1.5
+
+# Each sample uses the weather clock the app can actually resolve
+# (15-min when the ride is under 90 days old, otherwise the archive hour).
+# The sustained vector is then scaled. Gusts use the same scale and stay a band.
+WIND_TIME_RESOLVED = True
+WIND_SCALE = 0.75
 
 
 def cda_in_use() -> float:
