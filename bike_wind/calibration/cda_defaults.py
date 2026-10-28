@@ -1,12 +1,13 @@
 """CdA / yaw / wind defaults from the held-out calibration gate.
 
-``FITTED_CDA`` is the personal drag area from the earlier of the 57
-measured-power rides (Jul–Oct 2026). ``USE_FITTED_CDA`` is True only because
-that fit, with the wind handling below, lowered later-ride hold-out moving
-MAE (actual speed > 3 mph) versus CdA 0.408, Crr 0.008, yaw off, and a
-single ride-start wind snapshot.
+``FITTED_CDA`` is the personal drag area from the earlier rides of the
+3-year measured-power set (Oct 2023 through Dec 2025). ``USE_FITTED_CDA``
+is True only because that fit, with the wind handling below, lowered
+held-out moving MAE (actual speed > 3 mph) versus the previous live model
+(CdA 0.380, Crr 0.0075, yaw off, each sample's own wind × 0.75).
 
-Hold-out moving MAE: 2.314 mph before, 2.244 mph after.
+The latest 25% of rides, from 2025-12-26, were not used to train.
+Hold-out moving MAE: 2.298 mph before, 2.292 mph after.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from __future__ import annotations
 DEFAULT_CDA = 0.408
 
 # Train optimum under time-resolved wind ×0.75. Applied: hold-out MAE dropped.
-FITTED_CDA = 0.38
+FITTED_CDA = 0.505
 
 USE_FITTED_CDA = True
 YAW_CDA_ENABLED = False

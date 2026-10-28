@@ -164,9 +164,9 @@ def explain_prediction(
                 f"({'applied' if USE_FITTED_CDA else 'held out — not applied'})."
             ),
             plain=(
-                "Personal Cd·A 0.380 with Crr 0.0075, fit on the earlier 2026 "
-                "measured-power rides. Kept because the later rides' moving error "
-                "dropped (2.31 mph to 2.24 mph). Yaw drag stayed off."
+                "Personal Cd·A 0.505 with Crr 0.0052, fit on the earlier rides of the "
+                "3-year measured-power set. Kept because the latest rides' moving "
+                "error dropped (2.30 mph to 2.29 mph). Yaw drag stayed off."
             ),
         ),
         EquationLine(

@@ -9,9 +9,9 @@ AREA_DEFAULT_M2: float = 0.4
 TUCK_AREA_FACTOR: float = 0.85  # −15% frontal area on descents
 # Road-tire pavement baseline; packed-sand gravel rides use CRR_PACKED_SAND.
 CRR_DEFAULT: float = 0.004
-# 45 mm gravel tire on packed sand. 0.0075 is the personal fit on the 2026
+# 45 mm gravel tire on packed sand. 0.0052 is the personal fit on the 3-year
 # measured-power rides (held-out moving MAE dropped). Not a road tire.
-CRR_PACKED_SAND: float = 0.0075
+CRR_PACKED_SAND: float = 0.0052
 
 BIKE_MASS_ROAD_KG: float = 8.5
 BIKE_MASS_TT_KG: float = 7.0

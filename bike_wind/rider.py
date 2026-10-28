@@ -96,9 +96,9 @@ SURFACE_PRESETS: dict[str, SurfacePreset] = {
         label="Packed sand · 45 mm gravel tire",
         crr=CRR_PACKED_SAND,
         estimate_note=(
-            "Crr 0.0075 is a personal estimate for ~45 mm gravel tires on packed "
-            "sand (held-out rides got closer). Not a road tire, and not a lab "
-            "test of this exact tire."
+            "Crr 0.0052 is a personal estimate for ~45 mm gravel tires on packed "
+            "sand (3-year held-out rides got closer). Not a road tire, and not "
+            "a lab test of this exact tire."
         ),
     ),
 }
