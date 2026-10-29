@@ -315,24 +315,19 @@ class WhatIfResult:
         return self.wind_speed_mps * MPS_TO_MPH
 
 
-def apply_what_if(
+def what_if_course(
     result: PredictionResult,
     *,
-    power_w: float,
     wind_speed_mps: float,
     grade_scale: float = 1.0,
-    use_recorded_power: bool = False,
-) -> WhatIfResult:
-    """Re-solve with power (recorded series or flat), scaled wind, scaled grades.
+) -> tuple[list[float], list[WindComponents]]:
+    """Grades and winds after the what-if sliders.
 
-    When ``use_recorded_power`` and the result has a watts series, each point
-    uses that power with grade and wind. Otherwise uses flat ``power_w``.
-    Grade scale of 1.0 is the route as recorded.
+    Same scaling ``apply_what_if`` uses, so a pacing plan matches the chart.
     """
     n = len(result.grades)
     scale_g = max(0.0, float(grade_scale))
     grades = [g * scale_g for g in result.grades]
-
     base_wind = max(0.0, float(result.mean_wind_speed_mps))
     target_wind = max(0.0, float(wind_speed_mps))
     if result.weather_ok and base_wind > 1e-6:
@@ -350,6 +345,31 @@ def apply_what_if(
         winds = list(result.winds) if len(result.winds) == n else [WindComponents()] * n
     else:
         winds = [WindComponents()] * n
+    return grades, winds
+
+
+def apply_what_if(
+    result: PredictionResult,
+    *,
+    power_w: float,
+    wind_speed_mps: float,
+    grade_scale: float = 1.0,
+    use_recorded_power: bool = False,
+) -> WhatIfResult:
+    """Re-solve with power (recorded series or flat), scaled wind, scaled grades.
+
+    When ``use_recorded_power`` and the result has a watts series, each point
+    uses that power with grade and wind. Otherwise uses flat ``power_w``.
+    Grade scale of 1.0 is the route as recorded.
+    """
+    n = len(result.grades)
+    grades, winds = what_if_course(
+        result,
+        wind_speed_mps=wind_speed_mps,
+        grade_scale=grade_scale,
+    )
+    scale_g = max(0.0, float(grade_scale))
+    target_wind = max(0.0, float(wind_speed_mps))
 
     use_series = (
         use_recorded_power
