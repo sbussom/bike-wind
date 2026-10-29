@@ -245,6 +245,9 @@ def _apply_theme(dark: bool) -> None:
           border-radius: 10px;
           font-family: "Figtree", sans-serif;
           font-weight: 600;
+          background: transparent !important;
+          color: var(--bw-text) !important;
+          border: 1px solid var(--bw-line) !important;
         }}
         div.stButton > button[kind="primary"] {{
           background: var(--bw-accent) !important;
