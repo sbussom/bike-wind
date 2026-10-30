@@ -1283,6 +1283,7 @@ def main() -> None:
             </div>
             """
         )
+        st.page_link("pages/1_Wind_Map.py", label="Wind map", icon="🌬️")
 
     strava_cfg = load_strava_config()
     _sync_strava_secrets_fingerprint()
