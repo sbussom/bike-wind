@@ -4,6 +4,19 @@ Predict ground speed on a road segment under forecast wind.
 
 **UI flow (desktop):** left = nearby Strava segments map (geolocation / pin + explore); right = segment ID/URL + GPX + rider. Results full-width below. Connect with Strava (session token) for explore/segment loads; owner secrets token is fallback.
 
+## Wind map page
+
+`pages/1_Wind_Map.py` (sidebar **Wind Map**, or the link under the title) shows an
+animated GustyPower wind map: Open-Meteo 10 m wind on two nested grids (Florida
+peninsula + the home riding area near 27.206, −80.45), a 0–50 mph color scale,
+moving streaks for direction, a play button, and an hourly / 3-hourly time slider
+over the next ~4 days (Eastern time). The grid is cached for 3 h (~200 Open-Meteo
+calls per refresh). Pick **Round trip to pumphouse** (bundled geometry in
+`fixtures/segment_41392335.json`) or upload a GPX to overlay a route and get the
+unchanged `predict_speeds` time for a chosen start hour.
+
+![Wind map](docs/wind-map-1.png)
+
 ## Setup
 
 ```bash
