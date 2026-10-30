@@ -1334,7 +1334,8 @@ def main() -> None:
         cda_used = aero.cd * aero.area_m2 * clothing.cda_multiplier
         st.caption(
             f"{POSITION_PRESETS[aero.position_key].label} · "
-            f"Cd·A={cda_used:.3f} (×{clothing.cda_multiplier:.2f} clothing) · "
+            f"Cd·A={cda_used:.3f} (×{clothing.cda_multiplier:.2f} clothing"
+            f"{'; lower when pushing hard, ~0.48 at 250 W' if aero.power_cda else ''}) · "
             f"Crr={surface.crr:.4f} · "
             f"{st.session_state.rider_kg:.0f}+{aero.bike_mass_kg:.0f}="
             f"{st.session_state.rider_kg + aero.bike_mass_kg:.0f} kg"
@@ -1451,6 +1452,7 @@ def main() -> None:
             drivetrain_efficiency=DRIVETRAIN_EFFICIENCY,
             yaw_cda=YAW_CDA_ENABLED,
             clothing_cda_scale=clothing.cda_multiplier,
+            power_cda=aero.power_cda,
         )
         wind_z = standing_height_to_wind_z_m(float(st.session_state.height_cm))
         with st.spinner("Fetching wind and solving…"):

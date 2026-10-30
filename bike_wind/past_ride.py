@@ -84,6 +84,7 @@ def compare_activity(
         bike_mass_kg=aero.bike_mass_kg,
         cd=aero.cd,
         area_m2=aero.area_m2,
+        power_cda=aero.power_cda,
     )
     wind_z = standing_height_to_wind_z_m(height_cm)
     result = predict_speeds(

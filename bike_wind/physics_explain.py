@@ -91,6 +91,13 @@ def explain_prediction(
     base_cda = params.cd * params.area_m2
     clothing_scale = max(0.0, float(params.clothing_cda_scale))
     cda = base_cda * clothing_scale
+    power_cda_note = ""
+    if getattr(params, "power_cda", False):
+        from bike_wind.physics.forces import power_cda_scale
+
+        pf = power_cda_scale(params.power_w)
+        cda *= pf
+        power_cda_note = f" × effort-power factor {pf:.3f} at {params.power_w:.0f} W"
     mass = params.total_mass_kg
     eta = params.drivetrain_efficiency
     rho = params.rho
@@ -140,7 +147,7 @@ def explain_prediction(
                 f"P = {power_w:.0f} W ({power_note}); "
                 f"m = {params.rider_mass_kg:.1f}+{params.bike_mass_kg:.1f} = {mass:.1f} kg; "
                 f"base Cd·A = {params.cd:.2f}×{params.area_m2:.3f} = {base_cda:.3f} m²; "
-                f"clothing ×{clothing_scale:.2f} → Cd·A used = {cda:.3f} m²; "
+                f"clothing ×{clothing_scale:.2f}{power_cda_note} → Cd·A used = {cda:.3f} m²; "
                 f"Crr = {params.crr:.4f}; η = {eta:.2f}; ρ = {rho:.3f} kg/m³."
                 f"{yaw_note}"
             ),

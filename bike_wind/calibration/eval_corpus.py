@@ -113,6 +113,7 @@ def default_params() -> RiderBikeParams:
         crr=surface.crr,
         drivetrain_efficiency=DRIVETRAIN_EFFICIENCY,
         yaw_cda=YAW_CDA_ENABLED,
+        power_cda=aero.power_cda,
     )
 
 

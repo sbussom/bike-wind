@@ -120,6 +120,8 @@ class ResolvedAero:
     bike_mass_kg: float
     full_aero_kit: bool
     non_aero: bool
+    # Cd·A follows effort power (fitted gravel-hoods path only).
+    power_cda: bool = False
 
     @property
     def cda(self) -> float:
@@ -164,7 +166,11 @@ def resolve_aero(
     When ``apply_fitted_cda`` and the calibration gate kept a new Cd·A, the
     default gravel-hoods preset uses that Cd·A (cd=1, area=fitted).
     """
-    from bike_wind.calibration.cda_defaults import USE_FITTED_CDA, cda_in_use
+    from bike_wind.calibration.cda_defaults import (
+        POWER_CDA_ENABLED,
+        USE_FITTED_CDA,
+        cda_in_use,
+    )
 
     preset = POSITION_PRESETS.get(position_key) or POSITION_PRESETS[DEFAULT_POSITION_KEY]
     cd = preset.cd
@@ -183,6 +189,7 @@ def resolve_aero(
         cd += NON_AERO_CD
 
     # Apply held-out Cd·A only on the stock gravel-hoods path (no kit deltas).
+    fitted_path = False
     if (
         apply_fitted_cda
         and USE_FITTED_CDA
@@ -192,6 +199,7 @@ def resolve_aero(
     ):
         cd = 1.0
         area = cda_in_use()
+        fitted_path = True
 
     mass = preset.bike_mass_kg if bike_mass_kg is None else bike_mass_kg
     return ResolvedAero(
@@ -201,6 +209,7 @@ def resolve_aero(
         bike_mass_kg=mass,
         full_aero_kit=use_aero,
         non_aero=use_non,
+        power_cda=fitted_path and POWER_CDA_ENABLED,
     )
 
 
