@@ -13,6 +13,18 @@ A later time-error refit (CdA 0.48, Crr 0.0075, same 78 kg) cut held-out
 time error but raised held-out speed MAE, so these coefficients stayed.
 0 W is coasting (momentum), not a 0.1 m/s crawl. Anchor wind is blended,
 then smoothed over ``WIND_SMOOTH_M``.
+
+Power-dependent Cd·A (``POWER_CDA_ENABLED``): the single 0.505 ran slow on
+hard efforts and fast on easy ones. On the stock fitted path, Cd·A now
+follows the 3 s power at each sample::
+
+    CdA(P) = 0.5125 - 0.05 * (clamp(P, 100, 350) - 180) / 100
+
+so 0.553 coasting or under 100 W, 0.505 at 195 W, 0.478 at 250 W and 0.428
+at 350 W. The intercept and slope were picked by lowest pooled training
+speed MAE (434 rides before 2025-12-26) over global, power-step,
+ride-mean-power and per-sample families. Same 144-ride holdout:
+time error -0.290% -> +0.265%, speed MAE 2.276 -> 2.251 mph.
 """
 
 from __future__ import annotations
@@ -37,6 +49,29 @@ WIND_SCALE = 0.75
 # are blended. Kills single-sample bearing flicker without flattening a
 # real headwind on an out-and-back leg. 0 disables it.
 WIND_SMOOTH_M = 150.0
+
+
+# Cd·A that falls with effort power (fitted path only; see module docstring).
+POWER_CDA_ENABLED = True
+POWER_CDA_AT_REF = 0.5125
+POWER_CDA_REF_W = 180.0
+POWER_CDA_SLOPE_PER_100W = -0.05
+POWER_CDA_MIN_W = 100.0
+POWER_CDA_MAX_W = 350.0
+
+
+def power_cda(power_w: float) -> float:
+    """Personal Cd·A at this pedaling power (3 s average), clamped range."""
+    p = float(power_w)
+    if p != p:  # NaN
+        p = POWER_CDA_REF_W
+    p = min(max(p, POWER_CDA_MIN_W), POWER_CDA_MAX_W)
+    return POWER_CDA_AT_REF + POWER_CDA_SLOPE_PER_100W * (p - POWER_CDA_REF_W) / 100.0
+
+
+def power_cda_factor(power_w: float) -> float:
+    """Multiplier on the fitted Cd·A so the product equals ``power_cda``."""
+    return power_cda(power_w) / FITTED_CDA
 
 
 def cda_in_use() -> float:

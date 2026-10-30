@@ -40,6 +40,9 @@ class RiderBikeParams:
     yaw_cda: bool = False
     # Clothing Cd·A scale (1.0 = skin-tight aero; ~1.08 = loose jersey).
     clothing_cda_scale: float = 1.0
+    # When True, scale Cd·A by the fitted power curve at ``power_w``
+    # (lower when pushing hard, higher when coasting). Fitted path only.
+    power_cda: bool = False
 
     @property
     def total_mass_kg(self) -> float:
@@ -83,6 +86,13 @@ def effective_area(params: RiderBikeParams, grade: float) -> float:
     return params.area_m2
 
 
+def power_cda_scale(power_w: float) -> float:
+    """Cd·A multiplier from effort power (see ``cda_defaults.power_cda``)."""
+    from bike_wind.calibration.cda_defaults import power_cda_factor
+
+    return power_cda_factor(power_w)
+
+
 def yaw_cda_factor(airspeed_along: float, cross_track: float, *, k: float = YAW_CDA_K) -> float:
     """Cd·A multiplier from yaw angle; 1.0 with no crosswind, capped at 1.25."""
     yaw = math.atan2(abs(cross_track), abs(airspeed_along) + 1e-6)
@@ -114,6 +124,8 @@ def aero_force(
     if v_rel == 0.0:
         return 0.0
     cda = params.cd * area * max(0.0, float(params.clothing_cda_scale))
+    if params.power_cda:
+        cda *= power_cda_scale(params.power_w)
     if params.yaw_cda:
         cda *= yaw_cda_factor(airspeed_along, wind.cross_track)
     # Force along track: ½ρ CdA |v_rel| * airspeed_along
