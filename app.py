@@ -8,13 +8,24 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import streamlit as st
 
-from bike_wind.analysis import format_duration, pace_plan_for_target_time
+from bike_wind.analysis import (
+    format_duration,
+    parse_target_time,
+    power_for_target_time,
+    time_uncertainty_band,
+    wind_pace_split,
+)
 from bike_wind.physics_explain import explain_prediction
 from bike_wind.gpx.parse import parse_gpx
 from bike_wind.local_wind_map import compass_label, format_wind_speed_dir
 from bike_wind.physics.constants import DRIVETRAIN_EFFICIENCY
 from bike_wind.physics.forces import RiderBikeParams
-from bike_wind.predict import apply_what_if, downsample_route, predict_speeds
+from bike_wind.predict import (
+    apply_what_if,
+    downsample_route,
+    predict_speeds,
+    what_if_course,
+)
 from bike_wind.clothing import (
     CLOTHING_PRESETS,
     DEFAULT_CLOTHING_KEY,
@@ -206,6 +217,21 @@ def _apply_theme(dark: bool) -> None:
           color: var(--bw-metric);
           letter-spacing: -0.02em;
         }}
+        .bw-pace-row {{
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.85rem 1.75rem;
+          margin: 0.2rem 0 0.15rem 0;
+        }}
+        .bw-pace-value {{
+          margin: 0.1rem 0 0 0;
+          font-family: "Syne", sans-serif;
+          font-size: 1.35rem;
+          line-height: 1.1;
+          font-weight: 700;
+          color: var(--bw-metric);
+          letter-spacing: -0.02em;
+        }}
         div[data-testid="stMetricValue"] {{ color: var(--bw-metric); }}
         div[data-testid="stVerticalBlockBorderWrapper"] {{
           background: var(--bw-surface);
@@ -219,6 +245,9 @@ def _apply_theme(dark: bool) -> None:
           border-radius: 10px;
           font-family: "Figtree", sans-serif;
           font-weight: 600;
+          background: transparent !important;
+          color: var(--bw-text) !important;
+          border: 1px solid var(--bw-line) !important;
         }}
         div.stButton > button[kind="primary"] {{
           background: var(--bw-accent) !important;
@@ -989,6 +1018,233 @@ _POWER_MODE_RECORDED = "Recorded effort"
 _POWER_MODE_FLAT = "Flat slider watts"
 
 
+def _kom_time_s() -> float | None:
+    """Strava KOM seconds from the loaded segment, or None. Never invented."""
+    meta = st.session_state.get("strava_meta") or {}
+    kom = meta.get("kom_time_s")
+    if isinstance(kom, (int, float)) and float(kom) > 0.0:
+        return float(kom)
+    return None
+
+
+def _on_use_kom() -> None:
+    kom = _kom_time_s()
+    if kom is None:
+        return
+    st.session_state.pace_target_time = format_duration(kom)
+    st.session_state._pace_run = True
+
+
+def _pace_fingerprint(result, avg_power_w: float, wind_speed_mps: float, grade_scale: float, when_utc: str | None):
+    end = float(result.distances_m[-1]) if result.distances_m else 0.0
+    return (
+        round(float(avg_power_w), 1),
+        round(float(wind_speed_mps), 2),
+        round(float(grade_scale), 3),
+        len(result.distances_m),
+        round(end, 0),
+        when_utc or "",
+    )
+
+
+def _render_pacing(
+    result,
+    *,
+    avg_power_w: float,
+    wind_speed_mps: float,
+    grade_scale: float,
+    when_utc: str | None,
+    recorded_power: bool = False,
+) -> None:
+    """Target-time watts and a headwind/tailwind split on the loaded route."""
+    st.html('<p class="bw-section-label">Pacing</p>')
+    kom = _kom_time_s()
+    if kom is None:
+        st.caption("Strava didn't return a KOM. Enter a target time.")
+    else:
+        st.caption(f"Strava KOM {format_duration(kom)}.")
+
+    if "pace_target_time" not in st.session_state:
+        st.session_state.pace_target_time = ""
+
+    if kom is not None:
+        entry, kom_col, plan_col = st.columns([2.4, 1, 1])
+        with kom_col:
+            st.button("Use KOM", on_click=_on_use_kom, use_container_width=True)
+    else:
+        entry, plan_col = st.columns([3, 1])
+    with entry:
+        st.text_input(
+            "Target time",
+            placeholder="26:57",
+            key="pace_target_time",
+            label_visibility="collapsed",
+            help="mm:ss or h:mm:ss. Watts are solved for this time on the route and wind.",
+        )
+    with plan_col:
+        plan_click = st.button("Plan", use_container_width=True)
+
+    fp = _pace_fingerprint(result, avg_power_w, wind_speed_mps, grade_scale, when_utc)
+    if plan_click or st.session_state.get("_pace_run"):
+        st.session_state._pace_run = False
+        raw = (st.session_state.get("pace_target_time") or "").strip()
+        try:
+            with st.spinner("Planning pace…"):
+                grades, winds = what_if_course(
+                    result,
+                    wind_speed_mps=wind_speed_mps,
+                    grade_scale=grade_scale,
+                )
+                params = result.params.with_updates(power_w=float(avg_power_w))
+                target = None
+                target_error = None
+                if raw:
+                    try:
+                        seconds = parse_target_time(raw)
+                    except ValueError as exc:
+                        seconds = None
+                        target_error = str(exc)
+                    if seconds is not None:
+                        target = power_for_target_time(
+                            seconds,
+                            result.distances_m,
+                            grades,
+                            winds,
+                            params,
+                        )
+                split = wind_pace_split(
+                    float(avg_power_w),
+                    result.distances_m,
+                    grades,
+                    winds,
+                    params,
+                )
+                band = None
+                if result.weather_ok and when_utc:
+                    when_dt = datetime.fromisoformat(when_utc)
+                    if when_dt.tzinfo is None:
+                        when_dt = when_dt.replace(tzinfo=timezone.utc)
+                    band = time_uncertainty_band(
+                        result.distances_m,
+                        grades,
+                        winds,
+                        params,
+                        when_dt,
+                    )
+            st.session_state.pace_result = {
+                "fp": fp,
+                "target": target,
+                "target_error": target_error,
+                "target_text": raw,
+                "kom_time_s": kom,
+                "split": split,
+                "band": band,
+                "weather_ok": bool(result.weather_ok),
+                "distance_m": (
+                    float(result.distances_m[-1] - result.distances_m[0])
+                    if len(result.distances_m) >= 2
+                    else 0.0
+                ),
+                "when_utc": when_utc,
+                "avg_power_w": float(avg_power_w),
+            }
+        except Exception as exc:  # noqa: BLE001
+            st.caption(f"Pace plan failed: {exc}")
+
+    saved = st.session_state.get("pace_result")
+    if not saved:
+        note = (
+            "Plan solves watts for the target time, then splits that average "
+            "between the headwind and the tailwind."
+        )
+        if recorded_power:
+            note += " The split uses the power slider, not the recorded file."
+        st.caption(note)
+        return
+
+    if saved.get("fp") != fp:
+        st.caption("These numbers are from the last Plan click. Click Plan again after you change power, wind, or the start time.")
+
+    target = saved.get("target")
+    if saved.get("target_error"):
+        st.caption(saved["target_error"])
+    elif not saved.get("target_text"):
+        st.caption("Enter a target time to solve watts.")
+    elif target is not None:
+        dist_m = float(saved.get("distance_m") or 0.0)
+        mph = (dist_m / target.target_time_s) * 2.236936 if target.target_time_s > 0 else 0.0
+        used_kom = (
+            saved.get("kom_time_s") is not None
+            and abs(float(saved["kom_time_s"]) - target.target_time_s) < 0.6
+        )
+        kom_note = "Strava KOM. " if used_kom else ""
+        st.html(
+            f"""
+            <div class="bw-pace-row">
+              <div class="bw-time-block">
+                <p class="bw-time-label">Watts for {format_duration(target.target_time_s)}</p>
+                <p class="bw-pace-value">{target.required_power_w:.0f} W</p>
+              </div>
+              <div class="bw-time-block">
+                <p class="bw-time-label">Speed</p>
+                <p class="bw-pace-value">{mph:.1f} mph</p>
+              </div>
+            </div>
+            """
+        )
+        st.caption(f"{kom_note}{target.message}")
+
+    split = saved.get("split")
+    if split is not None and split.split_useful:
+        head_mi = split.headwind_distance_m / 1609.344
+        tail_mi = split.tailwind_distance_m / 1609.344
+        st.html(
+            f"""
+            <div class="bw-pace-row">
+              <div class="bw-time-block">
+                <p class="bw-time-label">Headwind · {head_mi:.1f} mi</p>
+                <p class="bw-pace-value">{split.headwind_power_w:.0f} W</p>
+              </div>
+              <div class="bw-time-block">
+                <p class="bw-time-label">Tailwind · {tail_mi:.1f} mi</p>
+                <p class="bw-pace-value">{split.tailwind_power_w:.0f} W</p>
+              </div>
+              <div class="bw-time-block">
+                <p class="bw-time-label">Saved vs steady</p>
+                <p class="bw-pace-value">{split.seconds_saved:.0f} s</p>
+              </div>
+            </div>
+            """
+        )
+        st.caption(
+            f"Steady {format_duration(split.steady_time_s)} at {split.steady_speed_mph:.1f} mph · "
+            f"paced {format_duration(split.paced_time_s)} at {split.paced_speed_mph:.1f} mph · "
+            f"same {split.avg_power_w:.0f} W average along the route."
+        )
+        if abs(split.meter_avg_power_w - split.avg_power_w) >= 3.0:
+            st.caption(
+                f"A power meter will read about {split.meter_avg_power_w:.0f} W, "
+                "because the harder leg takes longer."
+            )
+    elif split is not None:
+        st.caption(split.message)
+
+    band = saved.get("band")
+    if band is not None and split is not None:
+        spread_low = band.eta_s - band.eta_low_s
+        spread_high = band.eta_high_s - band.eta_s
+        lo = max(0.0, split.steady_time_s - spread_low)
+        hi = split.steady_time_s + spread_high
+        mph = band.along_uncertainty_mps / 0.44704
+        st.caption(
+            f"Forecast wind is uncertain (±{mph:.1f} mph along the route, "
+            f"{band.horizon_days:.1f} days out). "
+            f"Steady {saved['avg_power_w']:.0f} W could be {format_duration(lo)}–{format_duration(hi)}."
+        )
+    elif not saved.get("weather_ok"):
+        st.caption("Wind forecast isn't available, so this plan is calm air.")
+
+
 def _sync_whatif_slider_defaults(result) -> None:
     """Set what-if widget keys before those widgets are drawn (new Run only)."""
     default_power = int(round(result.default_whatif_power_w))
@@ -1473,6 +1729,7 @@ def main() -> None:
             "surface_key": surface.key,
             "surface_label": surface.label,
             "crr_note": surface.estimate_note,
+            "when_utc": when_dt.isoformat(),
         }
         source_label_out = source_label
         route_km = route.distances_m[-1] / 1000.0
@@ -1480,6 +1737,7 @@ def main() -> None:
         cda_out = aero.cd * aero.area_m2
         surface_label_out = surface.label
         crr_note_out = surface.estimate_note
+        when_utc_out = when_dt.isoformat()
     else:
         result = last_run["result"]
         source_label_out = last_run["source_label"]
@@ -1490,6 +1748,7 @@ def main() -> None:
             last_run.get("surface_key", DEFAULT_SURFACE_KEY)
         ).label
         crr_note_out = last_run.get("crr_note")
+        when_utc_out = last_run.get("when_utc")
 
     with st.container(border=True):
         st.html('<p class="bw-section-label">Results</p>')
@@ -1599,6 +1858,15 @@ def main() -> None:
             f"{format_wind_speed_dir(whatif.wind_speed_mps, whatif.wind_from_deg)} · "
             f"climbs {whatif_grade_pct:.0f}% · "
             f"calm {format_duration(whatif.eta_no_wind_s)}"
+        )
+
+        _render_pacing(
+            result,
+            avg_power_w=float(whatif_power),
+            wind_speed_mps=float(whatif_wind_mph) / 2.236936,
+            grade_scale=float(whatif_grade_pct) / 100.0,
+            when_utc=when_utc_out,
+            recorded_power=bool(use_recorded),
         )
 
         head_l, head_mid, head_r = st.columns([4, 1, 1])
@@ -1725,36 +1993,6 @@ def main() -> None:
         fig2.tight_layout()
         st.pyplot(fig2)
         plt.close(fig2)
-
-        # --- KOM pacing (segment effort) — short ---
-        meta = st.session_state.get("strava_meta") or {}
-        kom_s = meta.get("kom_time_s")
-        if (
-            use_effort
-            and kom_s
-            and isinstance(kom_s, (int, float))
-            and kom_s > 0
-            and result.weather_ok
-        ):
-            try:
-                plan = pace_plan_for_target_time(
-                    float(kom_s),
-                    result.distances_m,
-                    [g * (float(whatif_grade_pct) / 100.0) for g in result.grades],
-                    result.winds,
-                    result.params,
-                )
-                st.caption(
-                    f"KOM {format_duration(float(kom_s))} · "
-                    f"{plan.mean_speed_mph:.1f} mph · "
-                    f"{plan.avg_power_w:.0f} W avg "
-                    f"(peak {plan.peak_power_w:.0f} W; "
-                    f"flat {plan.flat_power_w:.0f} W) · "
-                    f"harder on climbs, easier on flats"
-                )
-            except Exception:  # noqa: BLE001
-                st.caption(f"KOM {format_duration(float(kom_s))} — pace unavailable")
-
 
 if __name__ == "__main__":
     main()

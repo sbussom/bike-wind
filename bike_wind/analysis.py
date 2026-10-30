@@ -417,6 +417,253 @@ def pace_plan_for_target_time(
     )
 
 
+# Along-track wind inside this band is treated as crosswind, not a pacing section.
+_SPLIT_ALONG_MPS = 0.5
+
+
+@dataclass(frozen=True)
+class WindPaceSplit:
+    """Headwind / tailwind watts at one average power, versus steady power.
+
+    The average is distance-weighted along the route: equal-length out and
+    back legs at ``P+d`` and ``P-d`` still average ``P``. A power meter reads
+    the time-weighted number, which is higher when the hard leg takes longer.
+    """
+
+    avg_power_w: float
+    headwind_power_w: float
+    tailwind_power_w: float
+    headwind_distance_m: float
+    tailwind_distance_m: float
+    neutral_distance_m: float
+    steady_time_s: float
+    paced_time_s: float
+    seconds_saved: float
+    steady_speed_mps: float
+    paced_speed_mps: float
+    meter_avg_power_w: float
+    split_useful: bool
+    message: str
+
+    @property
+    def steady_speed_mph(self) -> float:
+        return self.steady_speed_mps * 2.236936
+
+    @property
+    def paced_speed_mph(self) -> float:
+        return self.paced_speed_mps * 2.236936
+
+
+def _gap_distance(distances_m: Sequence[float], i: int) -> float:
+    return max(0.0, float(distances_m[i + 1]) - float(distances_m[i]))
+
+
+def wind_pace_split(
+    avg_power_w: float,
+    distances_m: Sequence[float],
+    grades: Sequence[float],
+    winds: Sequence[WindComponents],
+    params: RiderBikeParams,
+    *,
+    along_threshold_mps: float = _SPLIT_ALONG_MPS,
+    p_min: float = 50.0,
+    p_max: float = 800.0,
+) -> WindPaceSplit:
+    """Best headwind/tailwind split that keeps the same distance-averaged power.
+
+    Positive along-track wind is a tailwind. Samples inside
+    ``along_threshold_mps`` stay at the average. The search only moves watts
+    between the headwind and tailwind distance, then keeps the plan that
+    finishes sooner.
+    """
+    n = len(grades)
+    if n < 2 or len(distances_m) != n or len(winds) != n:
+        raise ValueError("distances, grades, and winds must share one length")
+    avg = float(avg_power_w)
+    if not math.isfinite(avg) or avg <= 0.0:
+        raise ValueError("avg_power_w must be positive")
+
+    # Gap i is ridden at the power and wind of sample i+1 (same as the solver).
+    kind = [0] * n  # 1 head, -1 tail, 0 neutral / start
+    dist_h = 0.0
+    dist_t = 0.0
+    dist_n = 0.0
+    for i in range(n - 1):
+        dd = _gap_distance(distances_m, i)
+        if dd <= 0.0:
+            continue
+        along = float(winds[i + 1].along_track)
+        j = i + 1
+        if along <= -along_threshold_mps:
+            kind[j] = 1
+            dist_h += dd
+        elif along >= along_threshold_mps:
+            kind[j] = -1
+            dist_t += dd
+        else:
+            dist_n += dd
+    total = dist_h + dist_t + dist_n
+
+    def eta_of(powers: list[float]) -> tuple[float, list[float]]:
+        gap: list[float] = []
+        speeds = solve_speeds(
+            params,
+            grades,
+            winds,
+            powers_w=powers,
+            distances_m=distances_m,
+            gap_dt=gap,
+        )
+        return eta_seconds(distances_m, speeds, gap_dt=gap), gap
+
+    steady_powers = [avg] * n
+    steady_eta, _steady_gap = eta_of(steady_powers)
+    steady_v = total / steady_eta if steady_eta > 0.0 else 0.0
+
+    def finish(
+        *,
+        head_w: float,
+        tail_w: float,
+        paced_eta: float,
+        meter_w: float,
+        useful: bool,
+        message: str,
+    ) -> WindPaceSplit:
+        saved = max(0.0, steady_eta - paced_eta)
+        paced_v = total / paced_eta if paced_eta > 0.0 else 0.0
+        return WindPaceSplit(
+            avg_power_w=avg,
+            headwind_power_w=head_w,
+            tailwind_power_w=tail_w,
+            headwind_distance_m=dist_h,
+            tailwind_distance_m=dist_t,
+            neutral_distance_m=dist_n,
+            steady_time_s=steady_eta,
+            paced_time_s=paced_eta if useful or paced_eta > 0 else steady_eta,
+            seconds_saved=saved if useful else 0.0,
+            steady_speed_mps=steady_v,
+            paced_speed_mps=paced_v if useful else steady_v,
+            meter_avg_power_w=meter_w if useful else avg,
+            split_useful=useful,
+            message=message,
+        )
+
+    share_h = dist_h / total if total > 0.0 else 0.0
+    share_t = dist_t / total if total > 0.0 else 0.0
+    if dist_h < 100.0 or dist_t < 100.0 or share_h < 0.08 or share_t < 0.08:
+        return finish(
+            head_w=avg,
+            tail_w=avg,
+            paced_eta=steady_eta,
+            meter_w=avg,
+            useful=False,
+            message=(
+                "Wind stays cross or one-sided, so a headwind/tailwind split "
+                "does not change the time. Steady power is the plan."
+            ),
+        )
+
+    ratio = dist_h / dist_t
+    # Keep both section powers inside [p_min, p_max].
+    delta_lo = max(p_min - avg, (avg - p_max) / ratio)
+    delta_hi = min(p_max - avg, (avg - p_min) / ratio)
+    if delta_hi < delta_lo + 1.0:
+        return finish(
+            head_w=avg,
+            tail_w=avg,
+            paced_eta=steady_eta,
+            meter_w=avg,
+            useful=False,
+            message=(
+                "There is no room to move watts between the headwind and the "
+                "tailwind without leaving a rideable power. Steady power is the plan."
+            ),
+        )
+
+    def powers_at(delta: float) -> tuple[list[float], float, float]:
+        p_h = avg + delta
+        p_t = avg - delta * ratio
+        out = [avg] * n
+        for j in range(1, n):
+            if kind[j] == 1:
+                out[j] = p_h
+            elif kind[j] == -1:
+                out[j] = p_t
+        out[0] = out[1]
+        return out, p_h, p_t
+
+    def meter_avg(powers: list[float], gap: list[float]) -> float:
+        num = 0.0
+        den = 0.0
+        for i, dt in enumerate(gap):
+            if dt > 0.0:
+                num += powers[i + 1] * dt
+                den += dt
+        return num / den if den > 0.0 else avg
+
+    best_delta = 0.0
+    best_eta = steady_eta
+    best_powers = steady_powers
+    best_head = avg
+    best_tail = avg
+    best_gap: list[float] = []
+
+    def consider(delta: float) -> None:
+        nonlocal best_delta, best_eta, best_powers, best_head, best_tail, best_gap
+        delta = min(delta_hi, max(delta_lo, delta))
+        powers, p_h, p_t = powers_at(delta)
+        eta, gap = eta_of(powers)
+        if eta < best_eta - 1e-6:
+            best_delta = delta
+            best_eta = eta
+            best_powers = powers
+            best_head = p_h
+            best_tail = p_t
+            best_gap = gap
+
+    steps = 8
+    span = delta_hi - delta_lo
+    for i in range(steps + 1):
+        consider(delta_lo + span * i / steps)
+    consider(0.0)
+    refine = span / steps
+    for i in range(7):
+        consider(best_delta + refine * (i - 3) / 3.0)
+
+    if best_gap:
+        meter = meter_avg(best_powers, best_gap)
+    else:
+        meter = avg
+        best_eta = steady_eta
+    saved = max(0.0, steady_eta - best_eta)
+    useful = saved >= 0.5 and abs(best_head - best_tail) >= 1.0
+    if not useful:
+        return finish(
+            head_w=avg,
+            tail_w=avg,
+            paced_eta=steady_eta,
+            meter_w=avg,
+            useful=False,
+            message=(
+                "Moving watts between the headwind and the tailwind does not "
+                "save a meaningful amount of time. Steady power is the plan."
+            ),
+        )
+    return finish(
+        head_w=best_head,
+        tail_w=best_tail,
+        paced_eta=best_eta,
+        meter_w=meter,
+        useful=True,
+        message=(
+            f"Headwind {best_head:.0f} W, tailwind {best_tail:.0f} W, "
+            f"average {avg:.0f} W along the route. "
+            f"Saves {saved:.0f} s versus steady "
+            f"({format_duration(steady_eta)} → {format_duration(best_eta)})."
+        ),
+    )
+
+
 def time_uncertainty_band(
     distances_m: Sequence[float],
     grades: Sequence[float],
