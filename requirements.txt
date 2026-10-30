@@ -2,6 +2,7 @@
 # site-packages; later git pulls then leave Python on a stale client without
 # new symbols (e.g. distances_mi / mph helpers). Streamlit Cloud: reboot after
 # version bumps so the editable tree is what `import bike_wind` loads.
+# 2026-10-30: bumped to force a Cloud reinstall after the wind map, pacing and CdA merges.
 -e .
 numpy>=1.26
 requests>=2.31
