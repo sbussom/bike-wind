@@ -177,10 +177,12 @@ def _slim(el: dict) -> dict | None:
     tags = el.get("tags") or {}
     if not geom or tags.get("highway") in SKIP_HIGHWAYS:
         return None
+    name = str(tags.get("name") or "").strip()
     return {
         "id": el.get("id"),
         "c": classify_tags(tags),
         "hw": tags.get("highway", ""),
+        "name": name,
         "g": [[round(p["lat"], 7), round(p["lon"], 7)] for p in geom],
     }
 
@@ -257,7 +259,8 @@ class _SegmentIndex:
                     for j in range(int(math.floor(min(lo0, lo1) / g)) - 1, int(math.floor(max(lo0, lo1) / g)) + 2):
                         self.grid[(i, j)].append((wi, la0, lo0, la1, lo1))
 
-    def lookup(self, lat: float, lon: float) -> int:
+    def lookup_match(self, lat: float, lon: float) -> tuple[int, int]:
+        """Return ``(surface class, way index)``. Way index is -1 off the map."""
         cell = (int(math.floor(lat / _GRID_DEG)), int(math.floor(lon / _GRID_DEG)))
         kx = 111320.0 * math.cos(math.radians(lat))
         ky = 110540.0
@@ -278,8 +281,11 @@ class _SegmentIndex:
         if road_w >= 0 and road_d <= ROAD_PREFERENCE_M**2:
             best_d, best_w = road_d, road_w
         if best_w < 0 or best_d > MATCH_RADIUS_M**2:
-            return OFF_MAP
-        return int(self.ways[best_w]["c"])
+            return OFF_MAP, -1
+        return int(self.ways[best_w]["c"]), best_w
+
+    def lookup(self, lat: float, lon: float) -> int:
+        return self.lookup_match(lat, lon)[0]
 
 
 def smooth_classes(classes: Sequence[int], distances_m: Sequence[float], half_m: float = SMOOTH_HALF_M) -> list[int]:
@@ -361,3 +367,63 @@ def route_surface_classes(
         return None
     _MEMO[key] = out
     return list(out)
+
+
+_MATCH_MEMO: dict[str, list] = {}
+
+
+def route_way_matches(
+    lats: Sequence[float],
+    lons: Sequence[float],
+    distances_m: Sequence[float],
+    *,
+    fetch=None,
+    timeout_s: float | None = None,
+    errors: list[str] | None = None,
+) -> list[dict | None] | None:
+    """Nearest OSM way at each point, or ``None`` if the lookup failed.
+
+    A point with no road inside the match radius is ``None`` (unmapped).
+    Each matched way is ``{"id", "hw", "name", "c"}``. This is the raw match,
+    not the smoothed class list ``route_surface_classes`` uses.
+    """
+    if not lats or len(lats) != len(lons) or len(lats) != len(distances_m):
+        return None
+    key = hashlib.sha1(
+        json.dumps([round(float(x), 5) for x in list(lats) + list(lons)]).encode()
+    ).hexdigest()
+    if key in _MATCH_MEMO:
+        return [None if m is None else dict(m) for m in _MATCH_MEMO[key]]
+    tiles = {_tile_of(la, lo) for la, lo in zip(lats, lons) if math.isfinite(la) and math.isfinite(lo)}
+    if not tiles:
+        return None
+    try:
+        if fetch is None and os.environ.get("GUSTYPOWER_OSM_OFFLINE") == "1":
+            def fetch(_missing):  # noqa: ANN001
+                raise RuntimeError("offline")
+        ways = load_ways(tiles, fetch=fetch, timeout_s=timeout_s)
+        idx = _SegmentIndex(ways)
+        out: list[dict | None] = []
+        for la, lo in zip(lats, lons):
+            if not (math.isfinite(la) and math.isfinite(lo)):
+                out.append(None)
+                continue
+            _kind, wi = idx.lookup_match(float(la), float(lo))
+            if wi < 0:
+                out.append(None)
+                continue
+            w = idx.ways[wi]
+            out.append(
+                {
+                    "id": w.get("id"),
+                    "hw": str(w.get("hw") or ""),
+                    "name": str(w.get("name") or ""),
+                    "c": int(w.get("c", OFF_MAP)),
+                }
+            )
+    except Exception as exc:  # noqa: BLE001 - sections still build from geometry
+        if errors is not None:
+            errors.append(str(exc) or exc.__class__.__name__)
+        return None
+    _MATCH_MEMO[key] = out
+    return [None if m is None else dict(m) for m in out]

@@ -15,6 +15,10 @@ solve and says so.
 
 The manual Cd·A multiplier and Crr are an unvalidated bike-setup override
 (aero wheels, road tires, and similar). They are not a fitted model.
+
+Per-section road/gravel is a third option. Road keeps production Cd·A and
+Crr 0.0052. Gravel uses Crr 0.010 and the same Cd·A. It does not change the
+OSM surface-aware column.
 """
 
 from __future__ import annotations
@@ -42,7 +46,13 @@ from bike_wind.rider import (
     resolve_aero,
     resolve_surface,
 )
-from bike_wind.surface.osm_surface import OFF_MAP, PAVED, UNPAVED, route_surface_classes
+from bike_wind.surface.osm_surface import (
+    OFF_MAP,
+    PAVED,
+    UNPAVED,
+    route_surface_classes,
+    route_way_matches,
+)
 
 # Interactive Overpass budget. Longer calls stalled the page and then fell
 # back anyway; the page caches a success so the next run skips the network.
@@ -230,6 +240,280 @@ def lookup_surface(
     )
 
 
+# Manual per-section rolling. Road keeps production Cd·A. Gravel changes Crr only.
+ROAD_SECTION_CRR = PRODUCTION_CRR
+GRAVEL_SECTION_CRR = SURFACE_UNPAVED_CRR
+SECTION_CHUNK_M = 2000.0
+SECTION_TURN_DEG = 60.0
+SECTION_MIN_TURN_M = 400.0
+_COMPASS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+
+
+@dataclass(frozen=True)
+class RouteSection:
+    """One stretch of a loaded route with its own road/gravel choice."""
+
+    section_id: str
+    start_m: float
+    end_m: float
+    start_idx: int
+    end_idx: int
+    title: str
+    detail: str
+    default_gravel: bool
+    osm_kind: str  # paved, unpaved, unmapped
+
+    @property
+    def length_m(self) -> float:
+        return max(0.0, self.end_m - self.start_m)
+
+
+def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dl = math.radians(lon2 - lon1)
+    x = math.sin(dl) * math.cos(p2)
+    y = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    return (math.degrees(math.atan2(x, y)) + 360.0) % 360.0
+
+
+def _heading_ahead(
+    lats: list[float],
+    lons: list[float],
+    distances_m: list[float],
+    i: int,
+    ahead_m: float = 80.0,
+) -> float | None:
+    j = i
+    n = len(distances_m)
+    while j + 1 < n and distances_m[j] - distances_m[i] < ahead_m:
+        j += 1
+    if j == i:
+        return None
+    return _bearing_deg(lats[i], lons[i], lats[j], lons[j])
+
+
+def _angle_diff(a: float, b: float) -> float:
+    return abs((a - b + 180.0) % 360.0 - 180.0)
+
+
+def _compass(bearing: float) -> str:
+    return _COMPASS[int((bearing + 22.5) // 45.0) % 8]
+
+
+def _way_key(match: dict | None) -> tuple:
+    if not match:
+        return ("off",)
+    return ("way", match.get("id"), match.get("name") or "", match.get("hw") or "")
+
+
+def _absorb_short_runs(
+    matches: list[dict | None],
+    distances_m: list[float],
+    min_m: float = 80.0,
+) -> list[dict | None]:
+    """Fold GPS flicker shorter than ``min_m`` into the previous way."""
+    n = len(matches)
+    if n == 0:
+        return matches
+    runs: list[tuple[int, int]] = []
+    start = 0
+    for i in range(1, n + 1):
+        if i == n or _way_key(matches[i]) != _way_key(matches[start]):
+            runs.append((start, i))
+            start = i
+    out = list(matches)
+    for k, (s, e) in enumerate(runs):
+        end_m = distances_m[e] if e < n else distances_m[-1]
+        if end_m - distances_m[s] >= min_m or k == 0:
+            continue
+        prev = out[runs[k - 1][0]]
+        for i in range(s, e):
+            out[i] = prev
+    return out
+
+
+def _section_bounds(
+    lats: list[float],
+    lons: list[float],
+    distances_m: list[float],
+    matches: list[dict | None],
+) -> list[tuple[int, int]]:
+    n = len(distances_m)
+    if n < 2:
+        return [(0, n)] if n else []
+    bounds = [0]
+    anchor = _heading_ahead(lats, lons, distances_m, 0) or 0.0
+    for i in range(1, n):
+        start = bounds[-1]
+        dist = distances_m[i] - distances_m[start]
+        way0 = _way_key(matches[start])
+        way_i = _way_key(matches[i])
+        step = _heading_ahead(lats, lons, distances_m, i) if way0 == ("off",) else None
+        turn = (
+            way0 == ("off",)
+            and dist >= SECTION_MIN_TURN_M
+            and step is not None
+            and _angle_diff(step, anchor) >= SECTION_TURN_DEG
+        )
+        split = False
+        if way_i != way0 and dist >= 40.0:
+            split = True
+        elif turn:
+            split = True
+        elif way0 == ("off",) and dist >= SECTION_CHUNK_M:
+            split = True
+        elif way0 != ("off",) and dist >= SECTION_CHUNK_M * 1.5:
+            split = True
+        if split:
+            bounds.append(i)
+            anchor = _heading_ahead(lats, lons, distances_m, i) or anchor
+    bounds.append(n)
+    pairs = [(bounds[k], bounds[k + 1]) for k in range(len(bounds) - 1) if bounds[k + 1] > bounds[k]]
+    # Glue a short unmapped stub (the turnaround sliver) onto the previous unmapped run.
+    merged: list[tuple[int, int]] = []
+    for s, e in pairs:
+        end_m = distances_m[e - 1] if e == n else distances_m[e]
+        length = end_m - distances_m[s]
+        if (
+            merged
+            and length < 600.0
+            and _way_key(matches[s]) == ("off",)
+            and _way_key(matches[merged[-1][0]]) == ("off",)
+        ):
+            ps, _pe = merged[-1]
+            merged[-1] = (ps, e)
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def _section_kind(matches: list[dict | None], start: int, end: int) -> tuple[str, bool, str]:
+    """Return (osm kind, default_gravel, place name)."""
+    counts = {"paved": 0, "unpaved": 0, "unmapped": 0}
+    names: dict[str, int] = {}
+    highways: dict[str, int] = {}
+    for i in range(start, end):
+        m = matches[i] if i < len(matches) else None
+        if not m:
+            counts["unmapped"] += 1
+            continue
+        kind = int(m.get("c", OFF_MAP))
+        if kind == UNPAVED:
+            counts["unpaved"] += 1
+        elif kind == PAVED:
+            counts["paved"] += 1
+        else:
+            counts["unmapped"] += 1
+        name = str(m.get("name") or "").strip()
+        hw = str(m.get("hw") or "").strip()
+        if name:
+            names[name] = names.get(name, 0) + 1
+        elif hw:
+            highways[hw] = highways.get(hw, 0) + 1
+    osm_kind = max(counts, key=lambda k: counts[k])
+    if names:
+        place = max(names, key=lambda k: names[k])
+    elif highways:
+        place = "OSM " + max(highways, key=lambda k: highways[k]).replace("_", " ")
+    else:
+        place = "Unmapped"
+    # Known OSM unpaved starts on gravel. Paved and unmapped start on road.
+    default_gravel = osm_kind == "unpaved" and counts["unpaved"] > counts["paved"]
+    return osm_kind, default_gravel, place
+
+
+def build_sections(
+    lats: list[float],
+    lons: list[float],
+    distances_m: list[float],
+    matches: list[dict | None] | None = None,
+) -> list[RouteSection]:
+    """Split a route into rows for the manual road/gravel toggles.
+
+    Mapped points stay together while they sit on the same OpenStreetMap way
+    (road name when the way has one, otherwise the highway type). Unmapped
+    stretches, such as the pumphouse canal bank, split on a turn or every
+    ``SECTION_CHUNK_M`` metres. OSM unpaved defaults to gravel. Everything
+    else defaults to road.
+    """
+    n = len(distances_m)
+    if n == 0:
+        return []
+    if matches is None or len(matches) != n:
+        matches = [None] * n
+    else:
+        matches = _absorb_short_runs(matches, distances_m)
+    route_key = f"{round(lats[0], 4)}:{round(lons[0], 4)}:{round(distances_m[-1])}"
+    sections: list[RouteSection] = []
+    for index, (start, end) in enumerate(_section_bounds(lats, lons, distances_m, matches)):
+        start_m = float(distances_m[start])
+        end_m = float(distances_m[end] if end < n else distances_m[-1])
+        osm_kind, default_gravel, place = _section_kind(matches, start, end)
+        heading = _heading_ahead(
+            lats, lons, distances_m, start, ahead_m=400.0
+        )
+        compass = _compass(heading) if heading is not None else ""
+        title = f"{start_m / 1000.0:.1f}–{end_m / 1000.0:.1f} km · {place}"
+        if compass:
+            title = f"{title} · {compass}"
+        if osm_kind == "unmapped":
+            detail = (
+                "No mapped road (canal bank or missing from OpenStreetMap). "
+                "Default road — flip to gravel if this stretch is gravel."
+            )
+        elif default_gravel:
+            detail = "OpenStreetMap unpaved. Default gravel (Crr 0.010)."
+        else:
+            detail = "OpenStreetMap paved. Default road (Crr 0.0052, production Cd·A)."
+        sections.append(
+            RouteSection(
+                section_id=f"{route_key}:{index}:{int(start_m)}-{int(end_m)}",
+                start_m=start_m,
+                end_m=end_m,
+                start_idx=start,
+                end_idx=end,
+                title=title,
+                detail=detail,
+                default_gravel=default_gravel,
+                osm_kind=osm_kind,
+            )
+        )
+    return sections
+
+
+def crr_for_sections(
+    n: int,
+    sections: list[RouteSection],
+    gravel: list[bool],
+) -> list[float]:
+    """Per-point Crr from each section's road/gravel choice."""
+    out = [ROAD_SECTION_CRR] * n
+    for sec, is_gravel in zip(sections, gravel):
+        value = GRAVEL_SECTION_CRR if is_gravel else ROAD_SECTION_CRR
+        for i in range(sec.start_idx, min(sec.end_idx, n)):
+            out[i] = value
+    return out
+
+
+def sections_for_route(
+    lats: list[float],
+    lons: list[float],
+    distances_m: list[float],
+    *,
+    timeout_s: float = OSM_TIMEOUT_S,
+    fetch=None,
+) -> tuple[list[RouteSection], SurfaceReport]:
+    """OSM report plus section rows. A failed lookup still returns geometry rows."""
+    report = lookup_surface(
+        lats, lons, distances_m, timeout_s=timeout_s, fetch=fetch
+    )
+    matches = route_way_matches(
+        lats, lons, distances_m, timeout_s=timeout_s, fetch=fetch
+    )
+    sections = build_sections(lats, lons, distances_m, matches)
+    return sections, report
+
+
 def average_speed_mph(distances_m: list[float], eta_s: float) -> float:
     """Distance / predicted time, in mph. Zero when the clock is empty."""
     if eta_s <= 0.0 or not math.isfinite(eta_s) or len(distances_m) < 2:
@@ -254,12 +538,13 @@ def resimulate(
     result: PredictionResult,
     params: RiderBikeParams,
     surface_classes: list[int] | tuple[int, ...] | None = None,
+    point_crr: list[float] | tuple[float, ...] | None = None,
 ) -> tuple[list[float], float]:
     """Re-solve on the production weather. Returns (speeds m/s, eta seconds).
 
     Uses the same grades, wind, power series, and initial speed as the
     production result. Passing the production parameters back (and no surface
-    classes) reproduces that result.
+    classes or per-point Crr) reproduces that result.
     """
     n = len(result.distances_m)
     powers = None
@@ -276,6 +561,9 @@ def resimulate(
         and len(surface_classes) == n
     ):
         classes = [int(c) for c in surface_classes]
+    crr = None
+    if point_crr is not None and len(point_crr) == n:
+        crr = [float(x) for x in point_crr]
     tuned = params.with_updates(rho=result.params.rho, power_w=result.params.power_w)
     gap: list[float] = []
     speeds = solve_speeds(
@@ -287,6 +575,7 @@ def resimulate(
         initial_speed_mps=_initial_speed(result),
         gap_dt=gap,
         surface_classes=classes,
+        point_crr=crr,
     )
     eta = eta_seconds(
         result.distances_m,
@@ -325,12 +614,15 @@ def compare_with_production(
     surface_report: SurfaceReport | None = None,
     manual_cda_multiplier: float | None = None,
     manual_crr: float | None = None,
+    section_crr: list[float] | None = None,
+    section_note: str = "",
 ) -> list[SetupPrediction]:
     """Production column, then each experimental column that was requested.
 
     ``surface_report`` is set when the surface-aware option is on. A failed
     report still adds a column, marked as a fallback to production.
     ``manual_cda_multiplier`` / ``manual_crr`` together add the manual column.
+    ``section_crr`` adds the per-section road/gravel column.
     """
     prod_eta = result.eta_with_wind_s
     prod_mph = average_speed_mph(result.distances_m, prod_eta)
@@ -381,6 +673,22 @@ def compare_with_production(
                     ),
                 )
             )
+    if section_crr is not None and len(section_crr) == len(result.distances_m):
+        _speeds, eta = resimulate(result, result.params, point_crr=section_crr)
+        columns.append(
+            _column(
+                result,
+                label="By section",
+                eta_s=eta,
+                production_eta=prod_eta,
+                production_mph=prod_mph,
+                note=section_note
+                or (
+                    f"Unvalidated per-section rolling. Road Crr {ROAD_SECTION_CRR:.4f} "
+                    f"and production Cd·A. Gravel Crr {GRAVEL_SECTION_CRR:.3f}."
+                ),
+            )
+        )
     if manual_cda_multiplier is not None and manual_crr is not None:
         params = apply_manual_setup(
             result.params,

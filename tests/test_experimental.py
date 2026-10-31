@@ -14,20 +14,25 @@ from bike_wind.experimental import (
     AERO_WHEELS_CDA_MULTIPLIER,
     AERO_WHEELS_CRR,
     AERO_WHEELS_PRESET_NAME,
+    GRAVEL_SECTION_CRR,
     PRODUCTION_CRR,
+    ROAD_SECTION_CRR,
     SurfaceReport,
     apply_manual_setup,
     average_speed_mph,
     build_production_params,
+    build_sections,
     compare_with_production,
+    crr_for_sections,
     distance_shares,
     lookup_surface,
     resimulate,
+    sections_for_route,
 )
 from bike_wind.gpx.parse import RouteStreams
 from bike_wind.physics.forces import WindComponents
 from bike_wind.physics.solver import solve_speeds
-from bike_wind.predict import PredictionResult, predict_speeds
+from bike_wind.predict import PredictionResult, downsample_route, predict_speeds
 from bike_wind.surface.osm_surface import OFF_MAP, PAVED, UNPAVED, route_surface_classes
 from bike_wind.weather.open_meteo import WeatherFetchError
 
@@ -351,3 +356,114 @@ def test_shipped_tiles_classify_without_network(monkeypatch):
     assert classes is not None and len(classes) == len(lats)
     # Canal-bank segment: mapped roads are outside the match radius.
     assert classes.count(OFF_MAP) > len(classes) * 0.9
+
+
+def _east_route(n: int = 40, step_m: float = 100.0):
+    lats = [27.2] * n
+    lons = [-80.5 + i * 0.001 for i in range(n)]
+    dist = [step_m * i for i in range(n)]
+    return lats, lons, dist
+
+
+def test_unmapped_chunks_default_to_road_and_named_unpaved_defaults_to_gravel():
+    lats, lons, dist = _east_route()
+    plain = build_sections(lats, lons, dist, None)
+    assert len(plain) >= 2  # 3.9 km split about every 2 km
+    assert all(sec.osm_kind == "unmapped" and not sec.default_gravel for sec in plain)
+    covered = [i for sec in plain for i in range(sec.start_idx, sec.end_idx)]
+    assert covered == list(range(len(dist)))
+
+    n = 12
+    lats, lons, dist = _east_route(n, 50.0)
+    paved = {"id": 1, "hw": "secondary", "name": "Okeechobee", "c": PAVED}
+    gravel = {"id": 2, "hw": "track", "name": "Canal bank", "c": UNPAVED}
+    matches = [paved] * 6 + [gravel] * 6
+    parts = build_sections(lats, lons, dist, matches)
+    assert len(parts) == 2
+    assert parts[0].default_gravel is False
+    assert "Okeechobee" in parts[0].title
+    assert parts[0].osm_kind == "paved"
+    assert parts[1].default_gravel is True
+    assert "Canal bank" in parts[1].title
+    assert parts[1].osm_kind == "unpaved"
+
+
+def test_section_crr_road_matches_production_and_gravel_is_slower():
+    params = build_production_params(rider_kg=69.0, power_w=220.0)
+    result = _flat_result(params, n=60)
+    n = len(result.distances_m)
+    lats = [27.2] * n
+    lons = [-80.5 + i * 0.0004 for i in range(n)]
+    sections = build_sections(lats, lons, result.distances_m, None)
+    road = crr_for_sections(n, sections, [False] * len(sections))
+    assert road == [ROAD_SECTION_CRR] * n
+    assert ROAD_SECTION_CRR == pytest.approx(0.0052)
+    assert GRAVEL_SECTION_CRR == pytest.approx(0.010)
+    road_cols = compare_with_production(result, section_crr=road)
+    assert road_cols[-1].label == "By section"
+    assert road_cols[-1].eta_s == pytest.approx(road_cols[0].eta_s)
+    gravel = crr_for_sections(n, sections, [True] * len(sections))
+    gravel_cols = compare_with_production(result, section_crr=gravel)
+    assert gravel_cols[-1].eta_s > road_cols[0].eta_s
+    assert gravel_cols[-1].avg_speed_mph < road_cols[0].avg_speed_mph
+    # First half of the route gravel, rest road: between all-road and all-gravel.
+    mixed_crr = [GRAVEL_SECTION_CRR] * (n // 2) + [ROAD_SECTION_CRR] * (n - n // 2)
+    mixed = compare_with_production(result, section_crr=mixed_crr)
+    assert road_cols[0].eta_s < mixed[-1].eta_s < gravel_cols[-1].eta_s
+
+
+def test_pumphouse_sections_default_road_and_gravel_is_slower(monkeypatch):
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.setenv("GUSTYPOWER_OSM_BUNDLED", str(root / "bike_wind" / "surface" / "tiles"))
+    seg = json.loads((root / "fixtures" / "segment_41392335.json").read_text())
+    route = downsample_route(
+        RouteStreams(
+            lats=[float(p[0]) for p in seg["latlng"]],
+            lons=[float(p[1]) for p in seg["latlng"]],
+            elevs_m=[float(x) for x in seg["altitude"]],
+            distances_m=[float(x) for x in seg["distance"]],
+        ),
+        max_points=300,
+    )
+    sections, report = sections_for_route(
+        list(route.lats), list(route.lons), list(route.distances_m)
+    )
+    assert report.ok
+    assert report.unmapped_share > 0.9
+    assert len(sections) >= 2
+    assert all(sec.osm_kind == "unmapped" and not sec.default_gravel for sec in sections)
+    page = (root / "pages" / "2_Experimental.py").read_text()
+    assert '["Road", "Gravel"]' in page
+    assert "By section column updates" in page
+    params = build_production_params(rider_kg=69.0, power_w=220.0)
+    grades = route.grades()
+    n = len(route)
+    winds = [WindComponents()] * n
+    gap: list[float] = []
+    speeds = solve_speeds(
+        params, grades, winds, distances_m=list(route.distances_m), gap_dt=gap
+    )
+    result = PredictionResult(
+        distances_m=list(route.distances_m),
+        speeds_with_wind_mps=speeds,
+        speeds_no_wind_mps=list(speeds),
+        grades=grades,
+        wind_along_mps=[0.0] * n,
+        wind_cross_mps=[0.0] * n,
+        winds=winds,
+        params=params,
+        rho_mean=params.rho,
+        weather_ok=True,
+        gap_dt_with_wind=list(gap),
+        gap_dt_no_wind=list(gap),
+    )
+    road = compare_with_production(
+        result,
+        section_crr=crr_for_sections(n, sections, [False] * len(sections)),
+    )
+    gravel = compare_with_production(
+        result,
+        section_crr=crr_for_sections(n, sections, [True] * len(sections)),
+    )
+    assert road[-1].eta_s == pytest.approx(road[0].eta_s, abs=0.05)
+    assert gravel[-1].eta_s > road[-1].eta_s + 10.0
