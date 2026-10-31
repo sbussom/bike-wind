@@ -43,6 +43,9 @@ class RiderBikeParams:
     # When True, scale Cd·A by the fitted power curve at ``power_w``
     # (lower when pushing hard, higher when coasting). Fitted path only.
     power_cda: bool = False
+    # When True and the route has OSM surface classes, paved / unpaved /
+    # off-map points use their own Crr and Cd·A scale (see cda_defaults).
+    surface_aware: bool = False
 
     @property
     def total_mass_kg(self) -> float:

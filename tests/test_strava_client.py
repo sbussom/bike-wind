@@ -480,3 +480,29 @@ def test_load_activity_route_absolute_times(tmp_path: Path) -> None:
     assert "velocity_smooth" in keys
     assert "watts" in keys
     assert "time" in keys
+
+
+def test_list_my_segment_efforts(tmp_path: Path) -> None:
+    session = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = [
+        {
+            "id": 9,
+            "name": "Pumphouse",
+            "elapsed_time": 1800,
+            "moving_time": 1700,
+            "start_date": "2026-10-22T14:00:00Z",
+            "distance": 12000.0,
+            "average_watts": 210,
+            "segment": {"id": 41392335, "name": "Round trip to pumphouse"},
+        }
+    ]
+    session.get.return_value = resp
+    client = StravaClient(_config(tmp_path), session=session)
+    efforts = client.list_my_segment_efforts(41392335, per_page=1)
+    assert len(efforts) == 1
+    assert efforts[0].effort_id == 9
+    assert efforts[0].elapsed_time_s == 1800
+    assert efforts[0].average_watts == pytest.approx(210)
+    assert session.get.call_args[0][0].endswith("/segments/41392335/all_efforts")

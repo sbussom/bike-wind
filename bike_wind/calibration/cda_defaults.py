@@ -85,3 +85,38 @@ def cda_fit_label() -> str:
     in_use = cda_in_use()
     status = "in use" if USE_FITTED_CDA else "not applied (hold-out MAE did not drop)"
     return f"fitted Cd·A = {fitted:.3f} m² ({status}); in use = {in_use:.3f} m²"
+
+
+# Surface-aware rolling setup. Each route point can be classed from
+# OpenStreetMap (bike_wind.surface): paved, unpaved, or off-map (no mapped
+# road: canal banks, levees, fields). Paved and OSM-unpaved points get their
+# own Crr and a scale on the power-dependent Cd·A; off-map points keep the
+# single setup above (Crr 0.0052, scale 1.0). A failed OSM lookup keeps that
+# single setup at every point.
+#
+# Fit on the same 434 training rides (before 2025-12-26): lowest pooled speed
+# MAE with training time error no worse than before, off-map Crr held at
+# 0.0052 so canal-bank segments (Round trip to pumphouse) do not move.
+# Same 144-ride holdout: time error +0.265% -> -0.157%, speed MAE
+# 2.251 -> 2.194 mph. Of the ridden distance ~63% is paved, ~11% OSM-unpaved
+# and ~26% off-map.
+#
+# ``SURFACE_AWARE_ENABLED`` stays False. The prediction page never turns this
+# on, so production times stay on the validated single setup. The Experimental
+# page opts in per run by setting ``RiderBikeParams.surface_aware`` itself.
+SURFACE_AWARE_ENABLED = False
+SURFACE_PAVED_CRR = 0.0052
+SURFACE_PAVED_CDA_SCALE = 0.95
+SURFACE_UNPAVED_CRR = 0.010
+SURFACE_UNPAVED_CDA_SCALE = 1.0
+SURFACE_OFFMAP_CRR = 0.0052
+SURFACE_OFFMAP_CDA_SCALE = 1.0
+
+
+def surface_setup(surface_class: int) -> tuple[float, float]:
+    """(Crr, Cd·A scale) for an OSM surface class (1 paved, 0 unpaved, -1 off-map)."""
+    if surface_class == 1:
+        return SURFACE_PAVED_CRR, SURFACE_PAVED_CDA_SCALE
+    if surface_class == 0:
+        return SURFACE_UNPAVED_CRR, SURFACE_UNPAVED_CDA_SCALE
+    return SURFACE_OFFMAP_CRR, SURFACE_OFFMAP_CDA_SCALE

@@ -17,6 +17,31 @@ unchanged `predict_speeds` time for a chosen start hour.
 
 ![Wind map](docs/wind-map-1.png)
 
+## Experimental page
+
+`pages/2_Experimental.py` (sidebar **Experimental**, or the link under the title)
+keeps the validated production model and adds unvalidated setups beside it.
+The prediction page does not call them (`SURFACE_AWARE_ENABLED` stays off).
+
+Pick a route (Round trip to pumphouse, whatever is loaded on the prediction
+page, a Strava segment URL, or a GPX), set the date and power, and press
+**Compare**. The table shows production time and average speed next to each
+option you turn on, plus the difference versus production. If the route has a
+recorded time, that actual elapsed time is shown too.
+
+* **Surface-aware rolling** looks up OpenStreetMap for each point (cached,
+  12 s timeout). Paved uses Crr 0.0052 and Cd·A ×0.95, unpaved uses Crr 0.010,
+  and unmapped points keep the production setup. A failed lookup says so and
+  shows the production numbers, along with the paved / unpaved / unmapped share
+  when the lookup works. Shipped tiles in `bike_wind/surface/tiles/` cover
+  part of St. Lucie County, including the Round trip to pumphouse corridor,
+  and are used before any network call. That segment is mostly unmapped canal
+  bank, so its surface-aware time stays on the production setup. Other areas
+  use a live lookup.
+* **Manual bike setup** is an unvalidated Cd·A multiplier (0.85–1.10, default
+  1.00) and Crr (default the production 0.0052). The preset **Aero wheels +
+  road tires (unvalidated guess)** sets Cd·A ×0.95 and Crr 0.0045.
+
 ## Setup
 
 ```bash
