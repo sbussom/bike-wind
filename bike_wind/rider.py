@@ -213,6 +213,19 @@ def resolve_aero(
     )
 
 
+def surface_aware_on(aero: ResolvedAero, surface_key: str = DEFAULT_SURFACE_KEY) -> bool:
+    """Whether the production model would apply per-point OSM setup.
+
+    True only on the stock fitted gravel path, and only when
+    ``SURFACE_AWARE_ENABLED`` is on. That flag is off, so this stays False
+    and the prediction page is unchanged. The Experimental page does not use
+    this helper; it sets ``surface_aware`` on its own parameters.
+    """
+    from bike_wind.calibration.cda_defaults import SURFACE_AWARE_ENABLED
+
+    return bool(SURFACE_AWARE_ENABLED and aero.power_cda and surface_key == DEFAULT_SURFACE_KEY)
+
+
 def resolve_surface(surface_key: str = DEFAULT_SURFACE_KEY) -> SurfacePreset:
     return SURFACE_PRESETS.get(surface_key) or SURFACE_PRESETS[DEFAULT_SURFACE_KEY]
 

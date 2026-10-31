@@ -526,6 +526,41 @@ class StravaClient:
             )
         return out
 
+    def list_my_segment_efforts(
+        self, segment_id: int, *, per_page: int = 5
+    ) -> list[SegmentEffortSummary]:
+        """This athlete's efforts on one segment (needs activity:read).
+
+        Strava returns the newest page first. Missing scope or a private
+        segment raises; callers that only want an optional comparison should
+        catch ``StravaError``.
+        """
+        data = self._get(
+            f"/segments/{int(segment_id)}/all_efforts",
+            params={"per_page": max(1, min(int(per_page), 10))},
+        )
+        if not isinstance(data, list):
+            return []
+        out: list[SegmentEffortSummary] = []
+        for item in data:
+            if not isinstance(item, dict) or item.get("id") is None:
+                continue
+            seg = item.get("segment") if isinstance(item.get("segment"), dict) else {}
+            watts = item.get("average_watts")
+            out.append(
+                SegmentEffortSummary(
+                    effort_id=int(item["id"]),
+                    segment_id=int(seg.get("id") or segment_id),
+                    name=str(item.get("name") or seg.get("name") or f"Segment {segment_id}"),
+                    distance_m=float(item.get("distance") or seg.get("distance") or 0.0),
+                    elapsed_time_s=int(item.get("elapsed_time") or 0),
+                    moving_time_s=int(item.get("moving_time") or 0),
+                    start_date=str(item.get("start_date") or ""),
+                    average_watts=float(watts) if watts is not None else None,
+                )
+            )
+        return out
+
     def load_activity_route(
         self,
         activity_id: int,
