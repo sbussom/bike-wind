@@ -22,14 +22,16 @@ from bike_wind.experimental import (
     CDA_MULTIPLIER_DEFAULT,
     CDA_MULTIPLIER_MAX,
     CDA_MULTIPLIER_MIN,
+    GRAVEL_SECTION_CRR,
     OSM_TIMEOUT_S,
     PRODUCTION_CRR,
-    SurfaceReport,
+    ROAD_SECTION_CRR,
     average_speed_mph,
     build_production_params,
     compare_with_production,
-    distance_shares,
+    crr_for_sections,
     format_surface_shares,
+    sections_for_route,
     surface_rule_blurb,
 )
 from bike_wind.gpx.parse import RouteStreams, parse_gpx
@@ -45,7 +47,6 @@ from bike_wind.rider import (
 )
 from bike_wind.strava import StravaAuthError, StravaClient, StravaError, load_strava_config
 from bike_wind.strava.oauth import scope_has_activity_read
-from bike_wind.surface.osm_surface import route_surface_classes
 from bike_wind.weather import hrrr_enabled_by_env
 
 st.set_page_config(
@@ -147,50 +148,6 @@ def _pumphouse_route() -> RouteStreams:
     )
 
 
-@st.cache_data(ttl=14 * 24 * 3600, show_spinner=False)
-def _cached_surface_classes(
-    lats: tuple[float, ...],
-    lons: tuple[float, ...],
-    dists: tuple[float, ...],
-    timeout_s: float,
-) -> list[int]:
-    """Cache a successful OSM classification. Failures are not cached."""
-    errors: list[str] = []
-    classes = route_surface_classes(
-        lats, lons, dists, timeout_s=timeout_s, errors=errors
-    )
-    if classes is None:
-        detail = errors[0] if errors else "OpenStreetMap returned no surface classes"
-        raise RuntimeError(detail)
-    return list(classes)
-
-
-def _lookup_cached(route: RouteStreams) -> SurfaceReport:
-    lats = tuple(float(x) for x in route.lats)
-    lons = tuple(float(x) for x in route.lons)
-    dists = tuple(float(x) for x in route.distances_m)
-    try:
-        classes = _cached_surface_classes(lats, lons, dists, OSM_TIMEOUT_S)
-    except Exception as exc:  # noqa: BLE001 - show the fallback on the page
-        return SurfaceReport(
-            ok=False,
-            classes=None,
-            error=str(exc),
-            paved_share=0.0,
-            unpaved_share=0.0,
-            unmapped_share=0.0,
-        )
-    paved, unpaved, unmapped = distance_shares(classes, dists)
-    return SurfaceReport(
-        ok=True,
-        classes=tuple(int(c) for c in classes),
-        error=None,
-        paved_share=paved,
-        unpaved_share=unpaved,
-        unmapped_share=unmapped,
-    )
-
-
 def _load_segment(segment_id: int) -> tuple[str, RouteStreams]:
     cache: dict = st.session_state.setdefault("exp_segment_cache", {})
     if segment_id in cache:
@@ -287,6 +244,51 @@ def _production_caption() -> str:
         f"Crr {surface.crr:.4f}, clothing ×{clothing.cda_multiplier:.2f}. "
         "Change those there; this page only adds experimental setups."
     )
+
+
+def _fetch_fingerprint(choice, segment_text, upload, power_w, rider_kg, when) -> tuple:
+    when_dt = when if isinstance(when, datetime) else datetime.combine(when, datetime.min.time())
+    if when_dt.tzinfo is None:
+        when_dt = when_dt.replace(tzinfo=timezone.utc)
+    return (
+        choice,
+        (segment_text or "").strip(),
+        getattr(upload, "name", None),
+        round(float(power_w), 1),
+        round(float(rider_kg), 2),
+        when_dt.isoformat(),
+    )
+
+
+def _section_flags(sections) -> list[bool]:
+    """Road/gravel control for each stretch. Widget keys stick for the session."""
+    st.subheader("Sections")
+    st.caption(
+        f"Road = Crr {ROAD_SECTION_CRR:.4f} and the production Cd·A. "
+        f"Gravel = Crr {GRAVEL_SECTION_CRR:.3f}. "
+        "OpenStreetMap unpaved starts on gravel. Paved and unmapped start on road. "
+        "The pumphouse canal bank is unmapped, so those rows start as road until you flip them. "
+        "The By section column updates when you flip a row, without fetching weather again."
+    )
+    flags: list[bool] = []
+    for sec in sections:
+        key = f"exp_sec_{sec.section_id}"
+        if key not in st.session_state:
+            st.session_state[key] = "Gravel" if sec.default_gravel else "Road"
+        label_col, toggle_col = st.columns([3, 2])
+        with label_col:
+            st.markdown(f"**{sec.title}**")
+            st.caption(sec.detail)
+        with toggle_col:
+            choice = st.radio(
+                sec.title,
+                ["Road", "Gravel"],
+                horizontal=True,
+                key=key,
+                label_visibility="collapsed",
+            )
+        flags.append(choice == "Gravel")
+    return flags
 
 
 def _render_results(payload: dict) -> None:
@@ -442,6 +444,7 @@ def main() -> None:
             )
 
     compare = st.button("Compare", type="primary", use_container_width=True)
+    fetch_fp = _fetch_fingerprint(choice, segment_text, upload, power_w, rider_kg, when)
 
     if compare:
         try:
@@ -475,102 +478,110 @@ def main() -> None:
                     wind_height_m=standing_height_to_wind_z_m(height_cm),
                     prefer_hrrr=hrrr_enabled_by_env(),
                 )
-            surface_report = None
-            surface_warning = None
-            surface_shares = None
-            if surface_on:
-                with st.spinner(
-                    f"Looking up road surface (OpenStreetMap, up to {OSM_TIMEOUT_S:.0f}s, cached after that)…"
-                ):
-                    surface_report = _lookup_cached(route)
-                if surface_report.fell_back:
-                    surface_warning = (
-                        "Surface lookup failed"
-                        + (f": {surface_report.error}" if surface_report.error else "")
-                        + ". The surface-aware column fell back to the production model. "
-                        "No share of the route was classified as paved, unpaved, or unmapped."
-                    )
-                else:
-                    surface_shares = (
-                        "Route classified by distance: "
-                        + format_surface_shares(surface_report)
-                        + "."
-                    )
-            manual_cda = float(st.session_state.exp_cda_mult) if manual_on else None
-            manual_crr = float(st.session_state.exp_crr) if manual_on else None
-            columns = compare_with_production(
-                result,
-                surface_report=surface_report,
-                manual_cda_multiplier=manual_cda,
-                manual_crr=manual_crr,
-            )
-            actual_s = result.actual_elapsed_s
-            actual_mph = (
-                average_speed_mph(result.distances_m, actual_s) if actual_s else None
-            )
-            power_note = (
-                "Every column uses the recorded power trace, same as the prediction page."
-                if result.has_watts
-                else f"No power trace on this route. Every column uses flat {float(power_w):.0f} W."
-            )
-            clock = (
-                "Weather uses the ride's start time."
-                if result.used_ride_start_time
-                else "Weather uses the date you picked."
-            )
-            detail = (
-                f"{label} · {result.distances_m[-1] / 1000.0:.1f} km · "
-                f"{result.wind_label(unit='mph')} · {power_note} {clock}"
-            )
-            effort_line = None if actual_s else _latest_effort_line(segment_id)
-            st.session_state.exp_last = {
-                "columns": columns,
-                "actual_s": actual_s,
-                "actual_mph": actual_mph,
-                "surface_warning": surface_warning,
-                "surface_shares": surface_shares,
-                "detail": detail,
+            with st.spinner(
+                f"Splitting the route into sections (OpenStreetMap, up to {OSM_TIMEOUT_S:.0f}s, cached)…"
+            ):
+                sections, surface_report = sections_for_route(
+                    list(route.lats),
+                    list(route.lons),
+                    list(route.distances_m),
+                    timeout_s=OSM_TIMEOUT_S,
+                )
+            effort_line = None if result.actual_elapsed_s else _latest_effort_line(segment_id)
+            st.session_state.exp_solved = {
+                "fp": fetch_fp,
+                "result": result,
+                "label": label,
+                "sections": sections,
+                "surface_report": surface_report,
                 "effort_line": effort_line,
-                "fp": (
-                    choice,
-                    (segment_text or "").strip(),
-                    getattr(upload, "name", None),
-                    round(float(power_w), 1),
-                    round(float(rider_kg), 2),
-                    bool(surface_on),
-                    bool(manual_on),
-                    round(float(st.session_state.exp_cda_mult), 3),
-                    round(float(st.session_state.exp_crr), 5),
-                    when_dt.isoformat(),
-                ),
             }
         except (StravaAuthError, StravaError) as exc:
             st.error(str(exc))
         except Exception as exc:  # noqa: BLE001
             st.error(f"Could not compare: {exc}")
 
-    last = st.session_state.get("exp_last")
-    if not last:
-        st.caption("Press Compare to run the production model and any setups you turned on.")
+    solved = st.session_state.get("exp_solved")
+    live = solved is not None and solved.get("fp") == fetch_fp
+    if not solved:
+        st.caption(
+            "Press Compare to load the route. Section rows show up after that, "
+            "and flipping road/gravel recalculates without fetching weather again."
+        )
         return
-    current_when = when if isinstance(when, datetime) else datetime.combine(when, datetime.min.time())
-    if current_when.tzinfo is None:
-        current_when = current_when.replace(tzinfo=timezone.utc)
-    current_fp = (
-        choice,
-        (segment_text or "").strip(),
-        getattr(upload, "name", None),
-        round(float(power_w), 1),
-        round(float(rider_kg), 2),
-        bool(surface_on),
-        bool(manual_on),
-        round(float(st.session_state.exp_cda_mult), 3),
-        round(float(st.session_state.exp_crr), 5),
-        current_when.isoformat(),
+    if not live:
+        st.caption(
+            "Route, time, or power changed. Press Compare to refresh weather. "
+            "Section choices are kept and apply on the next compare."
+        )
+        last = st.session_state.get("exp_last")
+        if last:
+            _render_results(last)
+        return
+
+    result = solved["result"]
+    sections = solved["sections"]
+    flags = _section_flags(sections) if sections else []
+    section_crr = crr_for_sections(len(result.distances_m), sections, flags) if sections else None
+    n_gravel = sum(1 for flag in flags if flag)
+    section_note = (
+        f"Unvalidated. Road Crr {ROAD_SECTION_CRR:.4f} and production Cd·A. "
+        f"Gravel Crr {GRAVEL_SECTION_CRR:.3f}. "
+        f"{n_gravel} of {len(sections)} sections set to gravel."
     )
-    if last.get("fp") != current_fp:
-        st.caption("Inputs changed. Press Compare to update the table.")
-    _render_results(last)
+    surface_report = solved["surface_report"] if surface_on else None
+    surface_warning = None
+    surface_shares = None
+    if surface_on and surface_report is not None:
+        if surface_report.fell_back:
+            surface_warning = (
+                "Surface lookup failed"
+                + (f": {surface_report.error}" if surface_report.error else "")
+                + ". The surface-aware column fell back to the production model. "
+                "No share of the route was classified as paved, unpaved, or unmapped."
+            )
+        else:
+            surface_shares = (
+                "Route classified by distance: "
+                + format_surface_shares(surface_report)
+                + "."
+            )
+    manual_cda = float(st.session_state.exp_cda_mult) if manual_on else None
+    manual_crr = float(st.session_state.exp_crr) if manual_on else None
+    columns = compare_with_production(
+        result,
+        surface_report=surface_report,
+        manual_cda_multiplier=manual_cda,
+        manual_crr=manual_crr,
+        section_crr=section_crr,
+        section_note=section_note,
+    )
+    actual_s = result.actual_elapsed_s
+    power_note = (
+        "Every column uses the recorded power trace, same as the prediction page."
+        if result.has_watts
+        else f"No power trace on this route. Every column uses flat {float(power_w):.0f} W."
+    )
+    clock = (
+        "Weather uses the ride's start time."
+        if result.used_ride_start_time
+        else "Weather uses the date you picked."
+    )
+    detail = (
+        f"{solved['label']} · {result.distances_m[-1] / 1000.0:.1f} km · "
+        f"{result.wind_label(unit='mph')} · {power_note} {clock}"
+    )
+    payload = {
+        "columns": columns,
+        "actual_s": actual_s,
+        "actual_mph": average_speed_mph(result.distances_m, actual_s) if actual_s else None,
+        "surface_warning": surface_warning,
+        "surface_shares": surface_shares,
+        "detail": detail,
+        "effort_line": solved.get("effort_line"),
+    }
+    st.session_state.exp_last = payload
+    _render_results(payload)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 # version bumps so the editable tree is what `import bike_wind` loads.
 # 2026-10-30: bumped to force a Cloud reinstall after the wind map, pacing and CdA merges.
 # 2026-10-31: bumped to 0.6.28 to force a Cloud reinstall after the Experimental page.
+# 2026-10-31: bumped to 0.6.29 to force a Cloud reinstall after per-section surface toggles.
 -e .
 numpy>=1.26
 requests>=2.31

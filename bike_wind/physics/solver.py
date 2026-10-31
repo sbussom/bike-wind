@@ -76,6 +76,7 @@ def solve_speeds(
     initial_speed_mps: float | None = None,
     gap_dt: list[float] | None = None,
     surface_classes: Sequence[int] | None = None,
+    point_crr: Sequence[float] | None = None,
 ) -> list[float]:
     """Ground speed at each sample (m/s).
 
@@ -106,6 +107,9 @@ def solve_speeds(
     ``surface_classes``: optional per-sample OSM class (1 paved, 0 unpaved,
     -1 off-map). Used only when ``params.surface_aware``; each class then
     gets its own Crr and Cd·A scale from ``cda_defaults.surface_setup``.
+
+    ``point_crr``: optional per-sample rolling resistance. When set, it
+    replaces Crr and leaves Cd·A alone. Omitted on the production path.
     """
     n = len(grades)
     if winds is None:
@@ -119,8 +123,10 @@ def solve_speeds(
 
     if surface_classes is not None and len(surface_classes) != n:
         raise ValueError("grades and surface_classes must have the same length")
+    if point_crr is not None and len(point_crr) != n:
+        raise ValueError("grades and point_crr must have the same length")
 
-    point_params = _point_params(params, powers_w, n, surface_classes)
+    point_params = _point_params(params, powers_w, n, surface_classes, point_crr)
 
     if distances_m is None:
         return [
@@ -146,6 +152,7 @@ def _point_params(
     powers_w: Sequence[float] | None,
     n: int,
     surface_classes: Sequence[int] | None = None,
+    point_crr: Sequence[float] | None = None,
 ) -> list[RiderBikeParams]:
     per_class: dict[int, RiderBikeParams] | None = None
     if surface_classes is not None and params.surface_aware:
@@ -155,13 +162,20 @@ def _point_params(
         for c in set(int(x) for x in surface_classes):
             crr, cda_scale = surface_setup(c)
             per_class[c] = params.with_updates(crr=crr, area_m2=params.area_m2 * cda_scale)
+
+    def _at(i: int) -> RiderBikeParams:
+        base = params if per_class is None else per_class[int(surface_classes[i])]  # type: ignore[index]
+        if point_crr is not None:
+            base = base.with_updates(crr=float(point_crr[i]))
+        return base
+
     if powers_w is None:
-        if per_class is None:
+        if per_class is None and point_crr is None:
             return [params] * n
-        return [per_class[int(c)] for c in surface_classes]  # type: ignore[union-attr]
+        return [_at(i) for i in range(n)]
     out: list[RiderBikeParams] = []
     for i, pw in enumerate(powers_w):
-        base = params if per_class is None else per_class[int(surface_classes[i])]  # type: ignore[index]
+        base = _at(i)
         if math.isfinite(pw) and pw >= 0.0:
             # Explicit 0 W = coast / stop. Do not substitute sustained watts.
             power = float(pw)

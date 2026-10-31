@@ -41,6 +41,13 @@ recorded time, that actual elapsed time is shown too.
 * **Manual bike setup** is an unvalidated Cd·A multiplier (0.85–1.10, default
   1.00) and Crr (default the production 0.0052). The preset **Aero wheels +
   road tires (unvalidated guess)** sets Cd·A ×0.95 and Crr 0.0045.
+* **By section** appears after Compare. The route is split into rows (one
+  OpenStreetMap way when the road is mapped; otherwise a turn or about 2 km).
+  Each row has a Road / Gravel control. Road is Crr 0.0052 and the production
+  Cd·A. Gravel is Crr 0.010. Unpaved OSM ways start on gravel; paved and
+  unmapped rows, including the pumphouse canal bank, start on road. Flipping
+  a row updates that column without fetching weather again. Choices stick for
+  the browser session.
 
 ## Setup
 

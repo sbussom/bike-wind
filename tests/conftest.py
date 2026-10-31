@@ -13,4 +13,5 @@ def _osm_offline(monkeypatch, tmp_path):
     from bike_wind.surface import osm_surface
 
     osm_surface._MEMO.clear()
+    osm_surface._MATCH_MEMO.clear()
     yield
