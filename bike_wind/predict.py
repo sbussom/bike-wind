@@ -64,6 +64,10 @@ class PredictionResult:
     speeds_gust_high_mps: list[float] | None = None
     speeds_gust_low_mps: list[float] | None = None
     mean_gust_speed_mps: float | None = None
+    # Display only. Same sign as wind_along_mps (+ tailwind). NaN where missing.
+    gust_along_mps: list[float] | None = None
+    # Meteorological "wind from" degrees at each sample (rider-height vector).
+    wind_from_deg_samples: list[float] | None = None
     # Integrator seconds for each gap. Moving time uses these, not a 0.1 m/s floor.
     gap_dt_with_wind: list[float] | None = None
     gap_dt_no_wind: list[float] | None = None
@@ -703,6 +707,8 @@ def predict_speeds(
     speeds_gust_high: list[float] | None = None
     speeds_gust_low: list[float] | None = None
     mean_gust_speed: float | None = None
+    gust_along_out: list[float] | None = None
+    from_deg_out: list[float] | None = None
 
     try:
         from bike_wind.calibration.cda_defaults import WIND_SCALE
@@ -744,6 +750,16 @@ def predict_speeds(
             u_mean = sum(fp.u_rider_mps for fp in forecast) / len(forecast)
             v_mean = sum(fp.v_rider_mps for fp in forecast) / len(forecast)
             mean_wind_speed, mean_wind_from = wind_from_uv(u_mean, v_mean)
+            from_deg_out = [
+                wind_from_uv(fp.u_rider_mps, fp.v_rider_mps)[1] for fp in forecast
+            ]
+            if any(fp.gust_along_track_mps is not None for fp in forecast):
+                gust_along_out = [
+                    float("nan")
+                    if fp.gust_along_track_mps is None
+                    else float(fp.gust_along_track_mps)
+                    for fp in forecast
+                ]
             gust_vals = [
                 fp.gust_speed_10m
                 for fp in forecast
@@ -862,6 +878,8 @@ def predict_speeds(
         speeds_gust_high_mps=speeds_gust_high,
         speeds_gust_low_mps=speeds_gust_low,
         mean_gust_speed_mps=mean_gust_speed,
+        gust_along_mps=gust_along_out,
+        wind_from_deg_samples=from_deg_out,
         gap_dt_with_wind=gap_wind,
         gap_dt_no_wind=gap_calm,
     )
