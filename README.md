@@ -67,6 +67,8 @@ Open http://localhost:8501. GPX works with no Strava credentials. Use **Prefer N
 
 Under the speed chart, **Wind along the route** plots headwind (above zero) and tailwind (below zero) in mph at bike height — the same sheltered wind the prediction uses. A dotted line is the forecast gust when Open-Meteo has one. The old shaded gust band on the speed chart is gone.
 
+When a recorded ride has a pause, the speed chart can use **Time** (the default if a stop is detected). Elapsed clock time is the x-axis, a stop is shaded at 0 mph for as long as it lasted, and the prediction waits through that pause so the legs stay aligned. The summary shows elapsed, moving, and stopped time. Distance still skips the pause.
+
 ## Deploy (Streamlit Community Cloud)
 
 1. Push this repo to GitHub.

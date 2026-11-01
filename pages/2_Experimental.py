@@ -37,6 +37,7 @@ from bike_wind.experimental import (
 )
 from bike_wind.gpx.parse import RouteStreams, parse_gpx
 from bike_wind.predict import downsample_route, predict_speeds
+from bike_wind.ride_clock import clock_speed_chart, figure_clock_speed
 from bike_wind.wind_chart import figure_wind_along, wind_along_chart
 from bike_wind.rider import (
     DEFAULT_POSITION_KEY,
@@ -293,6 +294,26 @@ def _section_flags(sections) -> list[bool]:
     return flags
 
 
+def _show_clock_chart(result) -> None:
+    """Actual vs predicted on elapsed time, with pauses drawn at 0 mph."""
+    if not result.times_utc or not result.actual_speeds_mps or not result.has_actual_speeds:
+        return
+    chart = clock_speed_chart(
+        result.times_utc,
+        result.distances_m,
+        result.actual_speeds_mps,
+        result.speeds_with_wind_mps,
+    )
+    if chart is None:
+        return
+    if chart.stops:
+        st.caption(chart.summary())
+    fig = figure_clock_speed(chart, dark=True)
+    st.pyplot(fig)
+    plt.close(fig)
+    st.caption(chart.caption)
+
+
 def _show_wind_chart(result) -> None:
     """Same headwind/tailwind graph as the prediction page, from this solve."""
     chart = wind_along_chart(result)
@@ -315,6 +336,8 @@ def _render_results(payload: dict) -> None:
         with slots[0]:
             st.metric("Actual elapsed", format_duration(float(actual_s)))
             st.caption(f"{payload['actual_mph']:.1f} mph · recorded, not a model")
+            if payload.get("clock_summary"):
+                st.caption(payload["clock_summary"])
         i = 1
     for col, slot in zip(columns, slots[i:]):
         with slot:
@@ -531,6 +554,7 @@ def main() -> None:
         last = st.session_state.get("exp_last")
         if last:
             _render_results(last)
+        _show_clock_chart(solved["result"])
         _show_wind_chart(solved["result"])
         return
 
@@ -586,6 +610,14 @@ def main() -> None:
         f"{solved['label']} · {result.distances_m[-1] / 1000.0:.1f} km · "
         f"{result.wind_label(unit='mph')} · {power_note} {clock}"
     )
+    ride = None
+    if result.times_utc and result.actual_speeds_mps and result.has_actual_speeds:
+        ride = clock_speed_chart(
+            result.times_utc,
+            result.distances_m,
+            result.actual_speeds_mps,
+            result.speeds_with_wind_mps,
+        )
     payload = {
         "columns": columns,
         "actual_s": actual_s,
@@ -594,9 +626,11 @@ def main() -> None:
         "surface_shares": surface_shares,
         "detail": detail,
         "effort_line": solved.get("effort_line"),
+        "clock_summary": ride.summary() if ride and ride.stops else None,
     }
     st.session_state.exp_last = payload
     _render_results(payload)
+    _show_clock_chart(result)
     _show_wind_chart(result)
 
 

@@ -18,6 +18,7 @@ from bike_wind.analysis import (
 from bike_wind.physics_explain import explain_prediction
 from bike_wind.gpx.parse import parse_gpx
 from bike_wind.local_wind_map import compass_label, format_wind_speed_dir
+from bike_wind.ride_clock import clock_speed_chart, figure_clock_speed
 from bike_wind.wind_chart import figure_wind_along, wind_along_chart
 from bike_wind.physics.constants import DRIVETRAIN_EFFICIENCY
 from bike_wind.physics.forces import RiderBikeParams
@@ -1826,6 +1827,14 @@ def main() -> None:
             use_recorded_power=use_recorded,
         )
 
+        clock = None
+        if result.times_utc and result.actual_speeds_mps and result.has_actual_speeds:
+            clock = clock_speed_chart(
+                result.times_utc,
+                result.distances_m,
+                result.actual_speeds_mps,
+                whatif.speeds_with_wind_mps,
+            )
         actual_s = result.actual_elapsed_s
         actual_html = (
             f"""
@@ -1867,6 +1876,8 @@ def main() -> None:
             f"climbs {whatif_grade_pct:.0f}% · "
             f"calm {format_duration(whatif.eta_no_wind_s)}"
         )
+        if clock is not None and clock.stops:
+            st.caption(clock.summary())
 
         _render_pacing(
             result,
@@ -1956,41 +1967,62 @@ def main() -> None:
         st.pyplot(fig_p)
         plt.close(fig_p)
 
-        # --- Graph 2: predicted vs actual speed (mph). Gusts are the wind chart. ---
-        fig2, ax2 = plt.subplots(figsize=(9, 3.2))
-        bg2, fg2, accent2 = _style_speed_axes(ax2, dark=dark, fig=fig2)
-        ax2.plot(
-            result.distances_mi,
-            whatif.speeds_with_wind_mph,
-            label="Predicted",
-            color=accent2,
-            linewidth=2,
-        )
-        if result.has_actual_speeds and result.actual_speeds_mph is not None:
+        # --- Graph 2: predicted vs actual speed. Time shows pauses; distance does not. ---
+        use_time = False
+        if clock is not None:
+            default_axis = "Time" if clock.stops else "Distance"
+            axis = st.radio(
+                "Speed chart",
+                ["Time", "Distance"],
+                index=0 if default_axis == "Time" else 1,
+                horizontal=True,
+                key="speed_axis",
+                help=(
+                    "Time is elapsed clock time, so a stop is a flat 0 mph for as "
+                    "long as it lasted. Distance skips that pause."
+                ),
+            )
+            use_time = axis == "Time"
+        if use_time and clock is not None:
+            fig2 = figure_clock_speed(clock, dark=dark)
+            st.pyplot(fig2)
+            plt.close(fig2)
+            st.caption(clock.caption)
+        else:
+            fig2, ax2 = plt.subplots(figsize=(9, 3.2))
+            bg2, fg2, accent2 = _style_speed_axes(ax2, dark=dark, fig=fig2)
             ax2.plot(
                 result.distances_mi,
-                result.actual_speeds_mph,
-                label="Actual",
-                color="#8fa398",
-                linewidth=1.8,
-                alpha=0.95,
+                whatif.speeds_with_wind_mph,
+                label="Predicted",
+                color=accent2,
+                linewidth=2,
             )
-        else:
-            st.caption(
-                "Actual speed needs a GPX or Strava velocity_smooth / time+distance — "
-                "showing predicted only."
+            if result.has_actual_speeds and result.actual_speeds_mph is not None:
+                ax2.plot(
+                    result.distances_mi,
+                    result.actual_speeds_mph,
+                    label="Actual",
+                    color="#8fa398",
+                    linewidth=1.8,
+                    alpha=0.95,
+                )
+            else:
+                st.caption(
+                    "Actual speed needs a GPX or Strava velocity_smooth / time+distance — "
+                    "showing predicted only."
+                )
+            if result.distances_mi:
+                ax2.set_xlim(result.distances_mi[0], result.distances_mi[-1])
+            leg2 = ax2.legend(
+                facecolor=bg2,
+                edgecolor="#3a4a42" if dark else "#c5d0ca",
             )
-        if result.distances_mi:
-            ax2.set_xlim(result.distances_mi[0], result.distances_mi[-1])
-        leg2 = ax2.legend(
-            facecolor=bg2,
-            edgecolor="#3a4a42" if dark else "#c5d0ca",
-        )
-        for text in leg2.get_texts():
-            text.set_color(fg2)
-        fig2.tight_layout()
-        st.pyplot(fig2)
-        plt.close(fig2)
+            for text in leg2.get_texts():
+                text.set_color(fg2)
+            fig2.tight_layout()
+            st.pyplot(fig2)
+            plt.close(fig2)
 
         # Wind the rider feels along the route. Gusts live here, not on the speed chart.
         wind_chart = wind_along_chart(result, wind_speed_mps=whatif.wind_speed_mps)
