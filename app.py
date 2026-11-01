@@ -19,6 +19,7 @@ from bike_wind.physics_explain import explain_prediction
 from bike_wind.gpx.parse import parse_gpx
 from bike_wind.local_wind_map import compass_label, format_wind_speed_dir
 from bike_wind.ride_clock import clock_speed_chart, figure_clock_speed
+from bike_wind.when_pick import pick_utc_date, pick_utc_when
 from bike_wind.wind_chart import figure_wind_along, wind_along_chart
 from bike_wind.physics.constants import DRIVETRAIN_EFFICIENCY
 from bike_wind.physics.forces import RiderBikeParams
@@ -1341,10 +1342,6 @@ def main() -> None:
     if st.session_state.get("strava_oauth_error"):
         st.error(st.session_state.strava_oauth_error)
 
-    default_dt = datetime.now(timezone.utc).replace(
-        minute=0, second=0, microsecond=0
-    ) + timedelta(hours=3)
-
     with st.container(border=True):
         st.html('<p class="bw-section-label">Route</p>')
         st.caption("Segment link or ID — load a public Strava segment.")
@@ -1409,10 +1406,11 @@ def main() -> None:
                 on_change=_on_recent_ride_pick,
             )
 
-        ride_day = st.date_input(
+        ride_day = pick_utc_date(
             "Rides on date (UTC)",
-            value=datetime.now(timezone.utc).date(),
-            key="ride_day_filter",
+            key="ride_day",
+            default=datetime.now(timezone.utc).date(),
+            quick=(("Today", 0), ("Yesterday", -1)),
         )
         if st.button(
             "List rides on date",
@@ -1505,10 +1503,15 @@ def main() -> None:
 
     with st.container(border=True):
         st.html('<p class="bw-section-label">Rider</p>')
-        when = st.datetime_input(
+        when = pick_utc_when(
             "When (UTC)",
-            value=default_dt,
-            help="Forecast time for a future attempt. Timed GPX or Strava rides use their start time for wind instead.",
+            key="when_utc",
+            default=datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+            + timedelta(hours=3),
+            quick=(("Today", 0), ("Tomorrow", 1)),
+        )
+        st.caption(
+            "Forecast time for a future attempt. A timed GPX or Strava ride uses its start time for wind instead."
         )
         labels = position_labels()
         current_label = POSITION_PRESETS[st.session_state.position_key].label

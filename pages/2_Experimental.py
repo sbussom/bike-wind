@@ -38,6 +38,7 @@ from bike_wind.experimental import (
 from bike_wind.gpx.parse import RouteStreams, parse_gpx
 from bike_wind.predict import downsample_route, predict_speeds
 from bike_wind.ride_clock import clock_speed_chart, figure_clock_speed
+from bike_wind.when_pick import pick_utc_when
 from bike_wind.wind_chart import figure_wind_along, wind_along_chart
 from bike_wind.rider import (
     DEFAULT_POSITION_KEY,
@@ -81,10 +82,6 @@ def _init_widgets() -> None:
         st.session_state.exp_crr = float(resolve_surface(surface_key).crr)
     if "exp_preset" not in st.session_state:
         st.session_state.exp_preset = PRESET_CUSTOM
-    if "exp_when" not in st.session_state:
-        st.session_state.exp_when = datetime.now(timezone.utc).replace(
-            minute=0, second=0, microsecond=0
-        ) + timedelta(hours=3)
     if "exp_surface_on" not in st.session_state:
         st.session_state.exp_surface_on = False
     if "exp_manual_on" not in st.session_state:
@@ -403,10 +400,15 @@ def main() -> None:
                 "Uses the segment, ride, or segment-on-a-ride you last selected "
                 "on the prediction page, including recorded power and time when Strava sent them."
             )
-        when = st.datetime_input(
+        when = pick_utc_when(
             "When (UTC)",
             key="exp_when",
-            help="Forecast time. A ride that already has timestamps uses its start time instead, same as the prediction page.",
+            default=datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+            + timedelta(hours=3),
+            quick=(("Today", 0), ("Tomorrow", 1)),
+        )
+        st.caption(
+            "Forecast time. A ride that already has timestamps uses its start time instead, same as the prediction page."
         )
         power_w = st.slider("Power (W)", 80, 450, step=5, key="exp_power_w")
         rider_kg = st.number_input(
