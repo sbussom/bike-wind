@@ -11,6 +11,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import streamlit as st
 
 from bike_wind.analysis import format_duration
@@ -36,6 +37,7 @@ from bike_wind.experimental import (
 )
 from bike_wind.gpx.parse import RouteStreams, parse_gpx
 from bike_wind.predict import downsample_route, predict_speeds
+from bike_wind.wind_chart import figure_wind_along, wind_along_chart
 from bike_wind.rider import (
     DEFAULT_POSITION_KEY,
     DEFAULT_RIDER_KG,
@@ -291,6 +293,18 @@ def _section_flags(sections) -> list[bool]:
     return flags
 
 
+def _show_wind_chart(result) -> None:
+    """Same headwind/tailwind graph as the prediction page, from this solve."""
+    chart = wind_along_chart(result)
+    if chart is None:
+        st.caption("No forecast wind to graph for this run.")
+        return
+    fig = figure_wind_along(chart, dark=True)
+    st.pyplot(fig)
+    plt.close(fig)
+    st.caption(chart.caption)
+
+
 def _render_results(payload: dict) -> None:
     columns = payload["columns"]
     actual_s = payload.get("actual_s")
@@ -517,6 +531,7 @@ def main() -> None:
         last = st.session_state.get("exp_last")
         if last:
             _render_results(last)
+        _show_wind_chart(solved["result"])
         return
 
     result = solved["result"]
@@ -582,6 +597,7 @@ def main() -> None:
     }
     st.session_state.exp_last = payload
     _render_results(payload)
+    _show_wind_chart(result)
 
 
 if __name__ == "__main__":

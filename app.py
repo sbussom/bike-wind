@@ -18,6 +18,7 @@ from bike_wind.analysis import (
 from bike_wind.physics_explain import explain_prediction
 from bike_wind.gpx.parse import parse_gpx
 from bike_wind.local_wind_map import compass_label, format_wind_speed_dir
+from bike_wind.wind_chart import figure_wind_along, wind_along_chart
 from bike_wind.physics.constants import DRIVETRAIN_EFFICIENCY
 from bike_wind.physics.forces import RiderBikeParams
 from bike_wind.predict import (
@@ -1955,23 +1956,13 @@ def main() -> None:
         st.pyplot(fig_p)
         plt.close(fig_p)
 
-        # --- Graph 2: predicted vs actual speed (mph); gust as band ---
+        # --- Graph 2: predicted vs actual speed (mph). Gusts are the wind chart. ---
         fig2, ax2 = plt.subplots(figsize=(9, 3.2))
         bg2, fg2, accent2 = _style_speed_axes(ax2, dark=dark, fig=fig2)
-        if whatif.has_gust_band and whatif.speeds_gust_low_mph and whatif.speeds_gust_high_mph:
-            ax2.fill_between(
-                result.distances_mi,
-                whatif.speeds_gust_low_mph,
-                whatif.speeds_gust_high_mph,
-                color=accent2,
-                alpha=0.22,
-                linewidth=0,
-                label="Gust band",
-            )
         ax2.plot(
             result.distances_mi,
             whatif.speeds_with_wind_mph,
-            label="Predicted (sustained wind)",
+            label="Predicted",
             color=accent2,
             linewidth=2,
         )
@@ -2000,6 +1991,16 @@ def main() -> None:
         fig2.tight_layout()
         st.pyplot(fig2)
         plt.close(fig2)
+
+        # Wind the rider feels along the route. Gusts live here, not on the speed chart.
+        wind_chart = wind_along_chart(result, wind_speed_mps=whatif.wind_speed_mps)
+        if wind_chart is None:
+            st.caption("No forecast wind to graph for this run.")
+        else:
+            fig_w = figure_wind_along(wind_chart, dark=dark)
+            st.pyplot(fig_w)
+            plt.close(fig_w)
+            st.caption(wind_chart.caption)
 
 if __name__ == "__main__":
     main()

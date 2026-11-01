@@ -5,6 +5,7 @@
 # 2026-10-30: bumped to force a Cloud reinstall after the wind map, pacing and CdA merges.
 # 2026-10-31: bumped to 0.6.28 to force a Cloud reinstall after the Experimental page.
 # 2026-10-31: bumped to 0.6.29 to force a Cloud reinstall after per-section surface toggles.
+# 2026-11-01: bumped to 0.6.30 to force a Cloud reinstall after the wind-along chart.
 -e .
 numpy>=1.26
 requests>=2.31

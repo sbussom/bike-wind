@@ -65,6 +65,8 @@ streamlit run app.py
 
 Open http://localhost:8501. GPX works with no Strava credentials. Use **Prefer NOAA HRRR** on CONUS routes for ~3 km wind; otherwise Open-Meteo is primary.
 
+Under the speed chart, **Wind along the route** plots headwind (above zero) and tailwind (below zero) in mph at bike height — the same sheltered wind the prediction uses. A dotted line is the forecast gust when Open-Meteo has one. The old shaded gust band on the speed chart is gone.
+
 ## Deploy (Streamlit Community Cloud)
 
 1. Push this repo to GitHub.
