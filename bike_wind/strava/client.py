@@ -471,6 +471,12 @@ class StravaClient:
         if watts is None:
             watts = item.get("weighted_average_watts")
         sport = str(item.get("sport_type") or item.get("type") or "Ride")
+        start_lat = float(start[0]) if len(start) >= 2 and start[0] is not None else None
+        start_lon = float(start[1]) if len(start) >= 2 and start[1] is not None else None
+        map_obj = item.get("map") if isinstance(item.get("map"), dict) else {}
+        polyline = str(
+            (map_obj or {}).get("summary_polyline") or (map_obj or {}).get("polyline") or ""
+        ).strip()
         return ActivitySummary(
             activity_id=int(item["id"]),
             name=str(item.get("name") or item["id"]),
@@ -480,8 +486,10 @@ class StravaClient:
             moving_time_s=int(item.get("moving_time") or 0),
             elapsed_time_s=int(item.get("elapsed_time") or 0),
             average_watts=float(watts) if watts is not None else None,
-            start_lat=float(start[0]) if len(start) >= 2 else None,
-            start_lon=float(start[1]) if len(start) >= 2 else None,
+            start_lat=start_lat,
+            start_lon=start_lon,
+            trainer=bool(item.get("trainer")),
+            has_gps=start_lat is not None and start_lon is not None and bool(polyline),
         )
 
     def list_activity_segment_efforts(

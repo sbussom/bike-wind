@@ -19,6 +19,10 @@ class ActivitySummary:
     average_watts: float | None
     start_lat: float | None = None
     start_lon: float | None = None
+    # Strava ``trainer`` flag. Indoor rides often also lack a GPS track.
+    trainer: bool = False
+    # True only when the summary has a start point and a non-empty map polyline.
+    has_gps: bool = False
 
     @property
     def has_power(self) -> bool:

@@ -20,6 +20,7 @@ from bike_wind.gpx.parse import parse_gpx
 from bike_wind.local_wind_map import compass_label, format_wind_speed_dir
 from bike_wind.ride_clock import clock_speed_chart, figure_clock_speed
 from bike_wind.choice_list import visible_choice
+from bike_wind.ride_filter import collect_outdoor_rides, hidden_rides_note
 from bike_wind.when_pick import pick_utc_date, pick_utc_when
 from bike_wind.wind_chart import figure_wind_along, wind_along_chart
 from bike_wind.physics.constants import DRIVETRAIN_EFFICIENCY
@@ -89,19 +90,6 @@ from bike_wind.strava.oauth import (
 from bike_wind.weather import hrrr_enabled_by_env
 
 
-_CYCLING_SPORTS = {
-    "ride",
-    "virtualride",
-    "gravelride",
-    "mountainbikeride",
-    "ebikeride",
-    "e-bike-ride",
-}
-
-
-def _is_cycling_activity(act: ActivitySummary) -> bool:
-    sport = (act.sport_type or "").lower().replace(" ", "")
-    return sport in _CYCLING_SPORTS or "ride" in sport
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sample_route.gpx"
 
@@ -661,34 +649,42 @@ def _select_strava_activity(act: ActivitySummary) -> None:
         st.session_state.power_w = int(round(act.average_watts))
 
 
-def _filter_cycling(acts: list[ActivitySummary]) -> list[ActivitySummary]:
-    rides = [a for a in acts if _is_cycling_activity(a)]
-    return rides if rides else list(acts)
-
-
 def _ensure_recent_rides(config, *, limit: int = 10) -> None:
-    """Fetch recent rides with the session activity:read token only (never secrets)."""
+    """Fetch recent outdoor rides with the session activity:read token only.
+
+    Virtual, trainer, e-bike, and no-GPS activities are skipped. If the first
+    Strava page is mostly those, later pages are fetched until ``limit``
+    outdoor rides are in hand or the history runs out.
+    """
     if not _session_has_activity_read():
         st.session_state.recent_activities = []
+        st.session_state.recent_hidden_rides = 0
         if st.session_state.get("strava_oauth_connected"):
             st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
         return
-    fp = "session-activity"
+    # Bumped when the outdoor filter landed so an open browser refetches.
+    fp = "session-activity-outdoor"
     if st.session_state.get("_rides_token_fp") == fp and st.session_state.recent_activities:
         return
+    per_page = 30
     try:
-        acts = _run_activity_call(
-            config,
-            lambda c: c.list_recent_activities(per_page=max(limit * 2, 20)),
-        )
-        rides = _filter_cycling(acts)[:limit]
+        def _fetch(client: StravaClient):
+            return collect_outdoor_rides(
+                lambda page: client.list_recent_activities(per_page=per_page, page=page),
+                per_page=per_page,
+                want=limit,
+            )
+
+        rides, hidden = _run_activity_call(config, _fetch)
         st.session_state.recent_activities = rides
+        st.session_state.recent_hidden_rides = hidden
         st.session_state._rides_token_fp = fp
         st.session_state.activity_stream_error = (
-            None if rides else "No recent rides found for this athlete."
+            None if rides else "No recent outdoor rides found for this athlete."
         )
     except StravaAuthError as exc:
         st.session_state.recent_activities = []
+        st.session_state.recent_hidden_rides = 0
         st.session_state._rides_token_fp = fp
         # Keep the short scope hint; never dump diagnostics / secrets paste text.
         if getattr(exc, "kind", None) == "forbidden_scope":
@@ -697,10 +693,12 @@ def _ensure_recent_rides(config, *, limit: int = 10) -> None:
             st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
     except StravaError:
         st.session_state.recent_activities = []
+        st.session_state.recent_hidden_rides = 0
         st.session_state._rides_token_fp = fp
         st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
     except Exception:  # noqa: BLE001
         st.session_state.recent_activities = []
+        st.session_state.recent_hidden_rides = 0
         st.session_state._rides_token_fp = fp
         st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
 
@@ -1406,6 +1404,9 @@ def main() -> None:
                 placeholder=_RIDE_PLACEHOLDER,
                 on_change=_on_recent_ride_pick,
             )
+        recent_note = hidden_rides_note(int(st.session_state.get("recent_hidden_rides") or 0))
+        if recent_note and activity_ok:
+            st.caption(recent_note)
 
         ride_day = pick_utc_date(
             "Rides on date (UTC)",
@@ -1420,22 +1421,36 @@ def main() -> None:
             key="list_rides_on_date",
         ):
             try:
-                day_acts = _run_activity_call(
-                    strava_cfg,
-                    lambda c: c.list_activities_on_date(ride_day),
-                )
-                day_rides = _filter_cycling(day_acts)
+                def _fetch_day(client: StravaClient):
+                    start = datetime(ride_day.year, ride_day.month, ride_day.day, tzinfo=timezone.utc)
+                    end = start + timedelta(days=1)
+                    per_page = 50
+                    return collect_outdoor_rides(
+                        lambda page: client.list_recent_activities(
+                            per_page=per_page,
+                            page=page,
+                            after=int(start.timestamp()) - 1,
+                            before=int(end.timestamp()),
+                        ),
+                        per_page=per_page,
+                        want=None,
+                    )
+
+                day_rides, day_hidden = _run_activity_call(strava_cfg, _fetch_day)
                 st.session_state.day_activities = day_rides
+                st.session_state.day_hidden_rides = day_hidden
                 st.session_state.activity_stream_error = (
                     None
                     if day_rides
-                    else f"No rides on {ride_day.isoformat()}."
+                    else f"No outdoor rides on {ride_day.isoformat()}."
                 )
             except (StravaAuthError, StravaError):
                 st.session_state.day_activities = []
+                st.session_state.day_hidden_rides = 0
                 st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
             except Exception:  # noqa: BLE001
                 st.session_state.day_activities = []
+                st.session_state.day_hidden_rides = 0
                 st.session_state.activity_stream_error = ACTIVITY_SCOPE_HINT
 
         day_activities: list[ActivitySummary] = list(
@@ -1451,6 +1466,9 @@ def main() -> None:
                 placeholder=_DAY_PLACEHOLDER,
                 on_change=_on_day_ride_pick,
             )
+        day_note = hidden_rides_note(int(st.session_state.get("day_hidden_rides") or 0))
+        if day_note:
+            st.caption(day_note)
 
         if st.session_state.get("selected_activity") and st.session_state.get(
             "route_source"
