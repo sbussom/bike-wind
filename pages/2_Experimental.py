@@ -445,7 +445,7 @@ def main() -> None:
             help="Cd·A multiplier and Crr you pick. Not fitted on the hold-out rides.",
         )
         if manual_on:
-            st.selectbox(
+            st.radio(
                 "Preset",
                 [PRESET_CUSTOM, AERO_WHEELS_PRESET_NAME],
                 key="exp_preset",

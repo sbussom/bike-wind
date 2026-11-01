@@ -8,6 +8,7 @@
 # 2026-11-01: bumped to 0.6.30 to force a Cloud reinstall after the wind-along chart.
 # 2026-11-01: bumped to 0.6.31 to force a Cloud reinstall after stop-aware speed charts.
 # 2026-11-01: bumped to 0.6.32 to force a Cloud reinstall after the mobile date picker fix.
+# 2026-11-01: bumped to 0.6.33 to force a Cloud reinstall after ride lists left the dropdown.
 -e .
 numpy>=1.26
 requests>=2.31
