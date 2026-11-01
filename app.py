@@ -19,6 +19,8 @@ from bike_wind.physics_explain import explain_prediction
 from bike_wind.gpx.parse import parse_gpx
 from bike_wind.local_wind_map import compass_label, format_wind_speed_dir
 from bike_wind.ride_clock import clock_speed_chart, figure_clock_speed
+from bike_wind.choice_list import visible_choice
+from bike_wind.when_pick import pick_utc_date, pick_utc_when
 from bike_wind.wind_chart import figure_wind_along, wind_along_chart
 from bike_wind.physics.constants import DRIVETRAIN_EFFICIENCY
 from bike_wind.physics.forces import RiderBikeParams
@@ -1341,10 +1343,6 @@ def main() -> None:
     if st.session_state.get("strava_oauth_error"):
         st.error(st.session_state.strava_oauth_error)
 
-    default_dt = datetime.now(timezone.utc).replace(
-        minute=0, second=0, microsecond=0
-    ) + timedelta(hours=3)
-
     with st.container(border=True):
         st.html('<p class="bw-section-label">Route</p>')
         st.caption("Segment link or ID — load a public Strava segment.")
@@ -1401,18 +1399,19 @@ def main() -> None:
             label_map = {ride_activity_label(a): a for a in activities}
             # Maps must exist before on_change fires on the next run.
             st.session_state._recent_label_map = label_map
-            labels = [_RIDE_PLACEHOLDER, *label_map.keys()]
-            st.selectbox(
+            visible_choice(
                 "Recent rides",
-                options=labels,
+                list(label_map.keys()),
                 key="recent_ride_pick",
+                placeholder=_RIDE_PLACEHOLDER,
                 on_change=_on_recent_ride_pick,
             )
 
-        ride_day = st.date_input(
+        ride_day = pick_utc_date(
             "Rides on date (UTC)",
-            value=datetime.now(timezone.utc).date(),
-            key="ride_day_filter",
+            key="ride_day",
+            default=datetime.now(timezone.utc).date(),
+            quick=(("Today", 0), ("Yesterday", -1)),
         )
         if st.button(
             "List rides on date",
@@ -1445,11 +1444,11 @@ def main() -> None:
         if day_activities:
             day_map = {ride_activity_label(a): a for a in day_activities}
             st.session_state._day_label_map = day_map
-            day_labels = [_DAY_PLACEHOLDER, *day_map.keys()]
-            st.selectbox(
+            visible_choice(
                 "Rides that day",
-                options=day_labels,
+                list(day_map.keys()),
                 key="day_ride_pick",
+                placeholder=_DAY_PLACEHOLDER,
                 on_change=_on_day_ride_pick,
             )
 
@@ -1480,10 +1479,11 @@ def main() -> None:
             if efforts:
                 effort_map = {e.label(): e for e in efforts}
                 st.session_state._effort_label_map = effort_map
-                st.selectbox(
+                visible_choice(
                     "Segment on this ride",
-                    options=[_EFFORT_PLACEHOLDER, *effort_map.keys()],
+                    list(effort_map.keys()),
                     key="effort_ride_pick",
+                    placeholder=_EFFORT_PLACEHOLDER,
                     on_change=_on_effort_pick,
                 )
             elif st.session_state.get("_efforts_activity_id") == act.activity_id:
@@ -1505,14 +1505,19 @@ def main() -> None:
 
     with st.container(border=True):
         st.html('<p class="bw-section-label">Rider</p>')
-        when = st.datetime_input(
+        when = pick_utc_when(
             "When (UTC)",
-            value=default_dt,
-            help="Forecast time for a future attempt. Timed GPX or Strava rides use their start time for wind instead.",
+            key="when_utc",
+            default=datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+            + timedelta(hours=3),
+            quick=(("Today", 0), ("Tomorrow", 1)),
+        )
+        st.caption(
+            "Forecast time for a future attempt. A timed GPX or Strava ride uses its start time for wind instead."
         )
         labels = position_labels()
         current_label = POSITION_PRESETS[st.session_state.position_key].label
-        chosen = st.selectbox(
+        chosen = st.radio(
             "Position",
             options=labels,
             index=labels.index(current_label) if current_label in labels else 0,
@@ -1525,7 +1530,7 @@ def main() -> None:
 
         surf_labels = surface_labels()
         current_surf = SURFACE_PRESETS[st.session_state.surface_key].label
-        surf_chosen = st.selectbox(
+        surf_chosen = st.radio(
             "Surface / Crr",
             options=surf_labels,
             index=surf_labels.index(current_surf) if current_surf in surf_labels else 0,
@@ -1541,7 +1546,7 @@ def main() -> None:
 
         cloth_labels = clothing_labels()
         current_cloth = CLOTHING_PRESETS[st.session_state.clothing_key].label
-        cloth_chosen = st.selectbox(
+        cloth_chosen = st.radio(
             "Clothing",
             options=cloth_labels,
             index=cloth_labels.index(current_cloth) if current_cloth in cloth_labels else 0,
