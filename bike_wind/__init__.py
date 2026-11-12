@@ -1,3 +1,3 @@
 """Bike wind speed prediction."""
 
-__version__ = "0.6.34"
+__version__ = "0.6.35"

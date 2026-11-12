@@ -10,6 +10,7 @@
 # 2026-11-01: bumped to 0.6.32 to force a Cloud reinstall after the mobile date picker fix.
 # 2026-11-01: bumped to 0.6.33 to force a Cloud reinstall after ride lists left the dropdown.
 # 2026-11-01: bumped to 0.6.34 to force a Cloud reinstall after hiding virtual and trainer rides.
+# 2026-11-12: bumped to 0.6.35 to force a Cloud reinstall after forecast logging.
 -e .
 numpy>=1.26
 requests>=2.31

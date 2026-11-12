@@ -1,5 +1,9 @@
 """Evaluate the speed model on a local corpus of Strava stream JSON files.
 
+This side script scores point speed (``speed_errors_mph``) and does not apply
+wind or the ±5% segment-time gate. Forecast and post-ride checks use
+``score_segment_time`` and are reported separately.
+
 Expected layout (not in git)::
 
     <corpus_dir>/

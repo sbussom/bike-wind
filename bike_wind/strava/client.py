@@ -15,7 +15,11 @@ from bike_wind.gpx.parse import RouteStreams
 from bike_wind.settings import get_setting
 from bike_wind.strava.cache import CachedSegment, SegmentCache
 from bike_wind.strava import errors as strava_errors
-from bike_wind.strava.models import ActivitySummary, SegmentEffortSummary
+from bike_wind.strava.models import (
+    ActivitySummary,
+    SegmentEffortSummary,
+    device_watts_flag,
+)
 from bike_wind.strava.oauth import OAuthTokenError, OAuthTokens, refresh_access_token
 from bike_wind.strava.rate_limit import RateLimitExceeded, RateLimiter, RateLimitStatus
 from bike_wind.strava.urls import ParsedStravaRef, parse_strava_segment_ref
@@ -490,6 +494,7 @@ class StravaClient:
             start_lon=start_lon,
             trainer=bool(item.get("trainer")),
             has_gps=start_lat is not None and start_lon is not None and bool(polyline),
+            device_watts=device_watts_flag(item),
         )
 
     def list_activity_segment_efforts(
@@ -530,6 +535,7 @@ class StravaClient:
                     average_watts=float(watts) if watts is not None else None,
                     start_index=int(start_idx) if start_idx is not None else None,
                     end_index=int(end_idx) if end_idx is not None else None,
+                    device_watts=device_watts_flag(item),
                 )
             )
         return out
@@ -565,6 +571,7 @@ class StravaClient:
                     moving_time_s=int(item.get("moving_time") or 0),
                     start_date=str(item.get("start_date") or ""),
                     average_watts=float(watts) if watts is not None else None,
+                    device_watts=device_watts_flag(item),
                 )
             )
         return out

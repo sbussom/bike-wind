@@ -113,10 +113,16 @@ STRAVA_REDIRECT_URI = "https://bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app"
 
 ## Reliability / back-test notes
 
-- Flat roads: target ~±5% predicted time vs known sustained-power files when wind/mass are right.
+- Flat roads: a forecast or post-ride check passes when predicted segment time is within ±5% of the actual time (`SEGMENT_TIME_PASS_PCT`).
 - Climbs: noisier (GPX grade noise) — treat as directional.
 - Conservative aero: \(z_0=0.03\), tuck −15% A on descents, crosswind adds drag only.
 - Open-Meteo forecasts are SQLite-cached by `(lat, lon, forecast_ts)`; HRRR samples use the same cache with `source=hrrr`.
+
+## Forecast log
+
+On the prediction page, **Run** for now or a later start, **Plan**, or **Use KOM** saves the forecast as it stood then (wind speed, direction, gusts, source, issue time, target time, and location) and the prediction made from it (segment, the power you entered, predicted segment time). Open **Accuracy** and click **Match forecasts to Strava** after the ride. That scores predicted vs actual segment time with the same ±5% gate as a post-ride check, and records the forecast-vs-actual wind error. Forecast scores and post-ride scores are listed on separate lines. Only outdoor rides with Strava `device_watts` (a power meter) are counted. Virtual, Zwift, trainer, and estimated-power rides are not.
+
+The log is SQLite beside the weather cache (`BIKE_WIND_CACHE`, or `.cache/weather/forecast_log.sqlite`). On Streamlit Community Cloud that disk is ephemeral: it lasts for the life of the container and is wiped on reboot or redeploy, and replicas do not share it. Point `BIKE_WIND_CACHE` at a persistent folder if you have one. The file stores no tokens.
 
 ## Tests
 

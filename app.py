@@ -20,7 +20,24 @@ from bike_wind.gpx.parse import parse_gpx
 from bike_wind.local_wind_map import compass_label, format_wind_speed_dir
 from bike_wind.ride_clock import clock_speed_chart, figure_clock_speed
 from bike_wind.choice_list import visible_choice
-from bike_wind.ride_filter import collect_outdoor_rides, hidden_rides_note
+from bike_wind.calibration.metrics import score_segment_time
+from bike_wind.forecast_log import (
+    ForecastLog,
+    PERSISTENCE_NOTE,
+    fetch_actual_wind,
+    forecast_row_line,
+    match_forecasts,
+    post_ride_row_line,
+    summary_line,
+    summarize_forecast,
+    summarize_post_rides,
+    target_dates,
+)
+from bike_wind.ride_filter import (
+    accuracy_skip_reason,
+    collect_outdoor_rides,
+    hidden_rides_note,
+)
 from bike_wind.when_pick import pick_utc_date, pick_utc_when
 from bike_wind.wind_chart import figure_wind_along, wind_along_chart
 from bike_wind.physics.constants import DRIVETRAIN_EFFICIENCY
@@ -1049,6 +1066,266 @@ def _pace_fingerprint(result, avg_power_w: float, wind_speed_mps: float, grade_s
     )
 
 
+def _when_from_iso(when_utc: str | None) -> datetime | None:
+    if not when_utc:
+        return None
+    try:
+        when_dt = datetime.fromisoformat(when_utc)
+    except ValueError:
+        return None
+    if when_dt.tzinfo is None:
+        return when_dt.replace(tzinfo=timezone.utc)
+    return when_dt.astimezone(timezone.utc)
+
+
+def _forecast_log_allowed(result, when_dt: datetime) -> bool:
+    """True when this run is a plan or a start, not a past-ride replay."""
+    if not result.weather_ok:
+        return False
+    if result.used_ride_start_time:
+        return False
+    if result.weather_source in {"none", "open-meteo-archive"}:
+        return False
+    if not result.lats or not result.lons:
+        return False
+    if when_dt.tzinfo is None:
+        when_dt = when_dt.replace(tzinfo=timezone.utc)
+    if when_dt < datetime.now(timezone.utc) - timedelta(minutes=30):
+        return False
+    if st.session_state.get("route_source") in {"activity", "effort"}:
+        return False
+    return True
+
+
+def _log_segment(source_label: str) -> tuple[int | None, str]:
+    if st.session_state.get("route_source") != "segment":
+        return None, source_label
+    meta = st.session_state.get("strava_meta") or {}
+    name = str(meta.get("name") or source_label)
+    try:
+        sid = int(meta["segment_id"]) if meta.get("segment_id") else None
+    except (TypeError, ValueError, KeyError):
+        sid = None
+    return sid, name
+
+
+def _wind_is_forecast(result, wind_speed_mps: float, grade_scale: float) -> bool:
+    """Plan logging keeps the forecast the model used, not a hand-scaled wind."""
+    wind_mph = float(wind_speed_mps) * 2.236936
+    if abs(wind_mph - float(result.mean_wind_speed_mph)) > 0.3:
+        return False
+    return abs(float(grade_scale) - 1.0) <= 1e-6
+
+
+def _record_post_ride(result, power_w: float) -> bool:
+    """Store a segment-time score for this past ride when it has a power meter."""
+    source = st.session_state.get("route_source")
+    act = st.session_state.get("selected_activity")
+    effort = st.session_state.get("selected_effort") if source == "effort" else None
+    activity = act if isinstance(act, ActivitySummary) else None
+    if source == "effort":
+        if not isinstance(effort, SegmentEffortSummary):
+            return False
+        if accuracy_skip_reason(activity, effort) is not None or activity is None:
+            return False
+        actual = float(effort.elapsed_time_s or effort.moving_time_s)
+        segment_id = int(effort.segment_id)
+        name = effort.name
+        activity_id = int(activity.activity_id)
+    elif source == "activity":
+        if activity is None or accuracy_skip_reason(activity) is not None:
+            return False
+        actual = float(activity.moving_time_s)
+        segment_id = 0
+        name = activity.name
+        activity_id = int(activity.activity_id)
+    else:
+        return False
+    grade = score_segment_time(float(result.eta_with_wind_s), actual)
+    if grade is None:
+        return False
+    ForecastLog().upsert_post_ride(
+        activity_id=activity_id,
+        segment_id=segment_id,
+        segment_name=name,
+        predicted_time_s=grade.predicted_s,
+        actual_time_s=grade.actual_s,
+        time_error_s=grade.error_s,
+        time_error_pct=grade.error_pct,
+        passed=grade.passed,
+        power_w=float(power_w),
+    )
+    return True
+
+
+def _capture_run_snapshot(result, *, when_dt: datetime, power_w: float, source_label: str) -> None:
+    """Log a pre-ride forecast, and a post-ride score when this run is a past ride."""
+    notes: list[str] = []
+    if _forecast_log_allowed(result, when_dt):
+        segment_id, name = _log_segment(source_label)
+        gap = abs((when_dt - datetime.now(timezone.utc)).total_seconds())
+        kind = "ride" if gap <= 45 * 60 else "plan"
+        row_id = ForecastLog().log_forecast(
+            issued_at=datetime.now(timezone.utc),
+            target_time=when_dt,
+            lat=float(result.lats[0]),
+            lon=float(result.lons[0]),
+            wind_speed_mps=float(result.mean_wind_speed_mps),
+            wind_from_deg=float(result.mean_wind_from_deg),
+            gust_speed_mps=result.mean_gust_speed_mps,
+            forecast_source=str(result.weather_source),
+            segment_id=segment_id,
+            segment_name=name,
+            target_power_w=float(power_w),
+            predicted_time_s=float(result.eta_with_wind_s),
+            kind=kind,
+        )
+        if row_id is not None:
+            notes.append(f"Logged the {kind} forecast for {name}.")
+    if _record_post_ride(result, power_w):
+        notes.append("Recorded a post-ride segment-time score.")
+    if notes:
+        st.session_state._forecast_log_note = " ".join(notes)
+
+
+def _log_planned_forecast(
+    result,
+    *,
+    power_w: float,
+    wind_speed_mps: float,
+    grade_scale: float,
+    when_utc: str | None,
+    predicted_s: float | None,
+    raw_target: str,
+    kom_s: float | None,
+    source_label: str,
+) -> None:
+    """Log Plan / Use KOM when the sliders are still the forecast the model used."""
+    when_dt = _when_from_iso(when_utc)
+    if when_dt is None or predicted_s is None:
+        return
+    if not _forecast_log_allowed(result, when_dt):
+        return
+    if not _wind_is_forecast(result, wind_speed_mps, grade_scale):
+        return
+    kind = "plan"
+    if kom_s is not None and raw_target.strip():
+        try:
+            if abs(parse_target_time(raw_target) - float(kom_s)) < 0.6:
+                kind = "kom"
+        except ValueError:
+            kind = "plan"
+    segment_id, name = _log_segment(source_label)
+    row_id = ForecastLog().log_forecast(
+        issued_at=datetime.now(timezone.utc),
+        target_time=when_dt,
+        lat=float(result.lats[0]),
+        lon=float(result.lons[0]),
+        wind_speed_mps=float(result.mean_wind_speed_mps),
+        wind_from_deg=float(result.mean_wind_from_deg),
+        gust_speed_mps=result.mean_gust_speed_mps,
+        forecast_source=str(result.weather_source),
+        segment_id=segment_id,
+        segment_name=name,
+        target_power_w=float(power_w),
+        predicted_time_s=float(predicted_s),
+        kind=kind,
+    )
+    if row_id is not None:
+        st.session_state._forecast_log_note = f"Logged the {kind} forecast for {name}."
+
+
+def _match_open_forecasts(config) -> str:
+    """Pair unscored forecast rows with Strava rides and write the scores."""
+    store = ForecastLog()
+    pending = store.pending_forecasts()
+    if not pending:
+        return "No forecasts waiting."
+
+    def _fetch(client: StravaClient):
+        found: dict[int, ActivitySummary] = {}
+        for day in target_dates(pending):
+            for act in client.list_activities_on_date(day):
+                found[act.activity_id] = act
+        activities = list(found.values())
+        efforts: dict[int, list[SegmentEffortSummary]] = {}
+        if any(row.segment_id is not None for row in pending):
+            for act in activities:
+                try:
+                    efforts[act.activity_id] = client.list_activity_segment_efforts(
+                        act.activity_id
+                    )
+                except (StravaAuthError, StravaError):
+                    efforts[act.activity_id] = []
+        return activities, efforts
+
+    activities, efforts = _run_activity_call(config, _fetch)
+    wind_cache: dict[tuple, tuple[float, float] | None] = {}
+
+    def _wind(lat: float, lon: float, when: datetime):
+        key = (round(lat, 3), round(lon, 3), when.strftime("%Y-%m-%dT%H"))
+        if key not in wind_cache:
+            wind_cache[key] = fetch_actual_wind(lat, lon, when)
+        return wind_cache[key]
+
+    updated = match_forecasts(pending, activities, efforts, _wind)
+    scored = 0
+    for row in updated:
+        if row.actual_time_s is not None:
+            store.update_forecast(row)
+            scored += 1
+    noun = "forecast" if scored == 1 else "forecasts"
+    return f"Scored {scored} {noun}."
+
+
+def _render_accuracy(config, *, strava_ready: bool) -> None:
+    """Forecast scores and post-ride scores, kept on separate lines."""
+    try:
+        store = ForecastLog()
+        pending = store.pending_forecasts()
+    except OSError as exc:
+        st.caption(f"Accuracy log unavailable: {exc}")
+        return
+    with st.expander(
+        "Accuracy",
+        expanded=bool(st.session_state.get("_forecast_log_note")),
+    ):
+        note = st.session_state.get("_forecast_log_note")
+        if note:
+            st.caption(note)
+        st.caption(
+            "Run a route for now or later, or click Plan / Use KOM, to save the "
+            "forecast and the predicted time. After the ride, match it to Strava. "
+            "Segment efforts use Strava elapsed time. Whole rides use moving time, "
+            "the same clock as the post-ride check. Only outdoor power-meter rides "
+            "count (Strava device_watts). Virtual, Zwift, trainer, and estimated "
+            "power are left out."
+        )
+        if pending and strava_ready:
+            if st.button("Match forecasts to Strava"):
+                try:
+                    st.caption(_match_open_forecasts(config))
+                except (StravaAuthError, StravaError):
+                    st.caption("Connect Strava with activity access to match forecasts.")
+                except Exception as exc:  # noqa: BLE001
+                    st.caption(f"Could not match forecasts: {exc}")
+        elif pending:
+            st.caption("Connect Strava to match these forecasts to rides.")
+        try:
+            forecasts = store.list_forecasts()
+            posts = store.list_post_rides()
+        except OSError as exc:
+            st.caption(f"Accuracy log unavailable: {exc}")
+            return
+        st.caption(summary_line(summarize_forecast(forecasts)))
+        st.caption(summary_line(summarize_post_rides(posts)))
+        for row in forecasts[:8]:
+            st.caption(forecast_row_line(row))
+        for row in posts[:5]:
+            st.caption(post_ride_row_line(row))
+        st.caption(PERSISTENCE_NOTE)
+
+
 def _render_pacing(
     result,
     *,
@@ -1057,6 +1334,8 @@ def _render_pacing(
     grade_scale: float,
     when_utc: str | None,
     recorded_power: bool = False,
+    predicted_s: float | None = None,
+    source_label: str = "",
 ) -> None:
     """Target-time watts and a headwind/tailwind split on the loaded route."""
     st.html('<p class="bw-section-label">Pacing</p>')
@@ -1150,6 +1429,17 @@ def _render_pacing(
                 "when_utc": when_utc,
                 "avg_power_w": float(avg_power_w),
             }
+            _log_planned_forecast(
+                result,
+                power_w=float(avg_power_w),
+                wind_speed_mps=float(wind_speed_mps),
+                grade_scale=float(grade_scale),
+                when_utc=when_utc,
+                predicted_s=predicted_s,
+                raw_target=raw,
+                kom_s=kom,
+                source_label=source_label,
+            )
         except Exception as exc:  # noqa: BLE001
             st.caption(f"Pace plan failed: {exc}")
 
@@ -1752,6 +2042,12 @@ def main() -> None:
                 wind_height_m=wind_z,
                 prefer_hrrr=prefer_hrrr,
             )
+        _capture_run_snapshot(
+            result,
+            when_dt=when_dt,
+            power_w=float(power_w),
+            source_label=source_label,
+        )
         st.session_state._last_run = {
             "result": result,
             "source_label": source_label,
@@ -1909,6 +2205,8 @@ def main() -> None:
             grade_scale=float(whatif_grade_pct) / 100.0,
             when_utc=when_utc_out,
             recorded_power=bool(use_recorded),
+            predicted_s=float(whatif.eta_with_wind_s),
+            source_label=source_label_out,
         )
 
         head_l, head_mid, head_r = st.columns([4, 1, 1])
@@ -2056,6 +2354,8 @@ def main() -> None:
             st.pyplot(fig_w)
             plt.close(fig_w)
             st.caption(wind_chart.caption)
+
+        _render_accuracy(strava_cfg, strava_ready=strava_ready)
 
 if __name__ == "__main__":
     main()
