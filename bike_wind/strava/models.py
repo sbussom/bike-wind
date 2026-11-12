@@ -5,6 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+def device_watts_flag(payload: dict) -> bool | None:
+    """Strava ``device_watts``. Missing means the watts are not a power meter."""
+    if not isinstance(payload, dict) or "device_watts" not in payload:
+        return None
+    value = payload.get("device_watts")
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes"}
+    return bool(value)
+
+
 @dataclass(frozen=True)
 class ActivitySummary:
     """One row from GET /athlete/activities."""
@@ -23,10 +35,19 @@ class ActivitySummary:
     trainer: bool = False
     # True only when the summary has a start point and a non-empty map polyline.
     has_gps: bool = False
+    # Strava ``device_watts``. True is a power meter. False is estimated power.
+    # None means the payload did not say, which is not counted as a meter.
+    device_watts: bool | None = None
 
     @property
     def has_power(self) -> bool:
+        """Any positive average watts, including Strava estimated power."""
         return self.average_watts is not None and self.average_watts > 0
+
+    @property
+    def has_meter_power(self) -> bool:
+        """Power-meter watts only. Estimated Strava power does not count."""
+        return self.device_watts is True and self.has_power
 
 
 @dataclass(frozen=True)
@@ -43,6 +64,12 @@ class SegmentEffortSummary:
     average_watts: float | None = None
     start_index: int | None = None
     end_index: int | None = None
+    # Same Strava flag as the parent activity, when the effort payload has it.
+    device_watts: bool | None = None
+
+    @property
+    def has_meter_power(self) -> bool:
+        return self.device_watts is True and self.average_watts is not None and self.average_watts > 0
 
     @property
     def average_speed_mps(self) -> float | None:

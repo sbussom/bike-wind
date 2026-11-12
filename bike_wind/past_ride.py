@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from bike_wind.analysis import format_duration
+from bike_wind.calibration.metrics import SegmentTimeScore, score_segment_time
 from bike_wind.physics.forces import RiderBikeParams
+from bike_wind.ride_filter import accuracy_skip_reason
 from bike_wind.predict import downsample_route, predict_speeds
 from bike_wind.rider import resolve_aero, standing_height_to_wind_z_m
 from bike_wind.strava.client import StravaClient
@@ -117,6 +119,18 @@ def compare_activity(
         delta_moving_s=delta,
         note=" ".join(note_bits),
     )
+
+
+def grade_comparison(comparison: PastRideComparison) -> SegmentTimeScore | None:
+    """Segment-time grade for a post-ride comparison.
+
+    Same ±5% gate as a logged forecast. Estimated power, virtual, Zwift, and
+    trainer rides are left out. ``compare_activity`` itself is unchanged and
+    still returns a comparison for those rides.
+    """
+    if accuracy_skip_reason(comparison.activity) is not None:
+        return None
+    return score_segment_time(comparison.predicted_s, comparison.actual_moving_s)
 
 
 def ride_activity_label(act: ActivitySummary) -> str:
