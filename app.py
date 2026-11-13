@@ -72,6 +72,7 @@ from bike_wind.rider import (
     surface_key_for_label,
     surface_labels,
 )
+from bike_wind.theme import apply_theme, chart_palette
 from bike_wind.user_config import clothing_key_from_config, save_rider_config
 try:
     from bike_wind.settings import strava_secrets_presence
@@ -117,169 +118,10 @@ st.set_page_config(
 )
 
 
-def _apply_theme(dark: bool) -> None:
-    """Calm athletic theme: Syne + Figtree, teal forest accent, soft gradient.
-
-    Use ``st.html`` (not ``st.markdown``) so ``<style>`` is injected. Recent
-    Streamlit versions sanitize markdown HTML and strip style tags, which made
-    the stylesheet print as visible plain text on the page.
-    """
-    if dark:
-        vars_block = """
-        :root {
-          --bw-bg0: #0c1210;
-          --bw-bg1: #14201b;
-          --bw-surface: rgba(22, 32, 28, 0.72);
-          --bw-text: #e7efea;
-          --bw-muted: #8fa398;
-          --bw-accent: #3ecf8e;
-          --bw-accent-dim: #1f6b4a;
-          --bw-line: rgba(62, 207, 142, 0.18);
-          --bw-metric: #f3faf6;
-        }
-        """
-    else:
-        vars_block = """
-        :root {
-          --bw-bg0: #eef3f0;
-          --bw-bg1: #f7faf8;
-          --bw-surface: rgba(255, 255, 255, 0.82);
-          --bw-text: #14201b;
-          --bw-muted: #5c6f66;
-          --bw-accent: #1a6b52;
-          --bw-accent-dim: #0f4334;
-          --bw-line: rgba(26, 107, 82, 0.16);
-          --bw-metric: #0f241c;
-        }
-        """
-    # st.html keeps <style>; markdown would strip tags and leak CSS as text.
-    st.html(
-        f"""
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Syne:wght@600;700;800&display=swap');
-        {vars_block}
-        .stApp {{
-          background:
-            radial-gradient(1200px 600px at 12% -10%, rgba(62, 207, 142, 0.10), transparent 55%),
-            radial-gradient(900px 500px at 90% 0%, rgba(26, 107, 82, 0.12), transparent 50%),
-            linear-gradient(165deg, var(--bw-bg0), var(--bw-bg1) 55%, var(--bw-bg0));
-          color: var(--bw-text);
-          font-family: "Figtree", sans-serif;
-        }}
-        [data-testid="stHeader"] {{
-          background: transparent;
-        }}
-        h1, h2, h3, .bw-brand {{
-          font-family: "Syne", sans-serif !important;
-          letter-spacing: -0.02em;
-          font-weight: 700 !important;
-        }}
-        .bw-hero {{
-          padding: 0.4rem 0 1.1rem 0;
-          border-bottom: 1px solid var(--bw-line);
-          margin-bottom: 1.25rem;
-        }}
-        .bw-brand {{
-          font-size: clamp(2.4rem, 7vw, 3.4rem);
-          line-height: 1.05;
-          margin: 0;
-          color: var(--bw-text);
-        }}
-        .bw-tagline {{
-          margin: 0.55rem 0 0 0;
-          color: var(--bw-muted);
-          font-size: 1.05rem;
-          max-width: 34rem;
-          line-height: 1.45;
-        }}
-        .bw-section-label {{
-          font-family: "Syne", sans-serif;
-          font-size: 0.78rem;
-          text-transform: uppercase;
-          letter-spacing: 0.14em;
-          color: var(--bw-accent);
-          margin: 0 0 0.35rem 0;
-        }}
-        .bw-time-row {{
-          display: flex;
-          flex-wrap: wrap;
-          gap: 1.25rem 2rem;
-          margin: 0.15rem 0 0.85rem 0;
-          align-items: flex-end;
-        }}
-        .bw-time-block {{
-          min-width: 7.5rem;
-        }}
-        .bw-time-label {{
-          margin: 0;
-          font-size: 0.72rem;
-          text-transform: uppercase;
-          letter-spacing: 0.12em;
-          color: var(--bw-muted);
-        }}
-        .bw-time-value {{
-          margin: 0.15rem 0 0 0;
-          font-family: "Syne", sans-serif;
-          font-size: clamp(1.85rem, 5vw, 2.55rem);
-          line-height: 1.05;
-          font-weight: 700;
-          color: var(--bw-metric);
-          letter-spacing: -0.02em;
-        }}
-        .bw-pace-row {{
-          display: flex;
-          flex-wrap: wrap;
-          gap: 0.85rem 1.75rem;
-          margin: 0.2rem 0 0.15rem 0;
-        }}
-        .bw-pace-value {{
-          margin: 0.1rem 0 0 0;
-          font-family: "Syne", sans-serif;
-          font-size: 1.35rem;
-          line-height: 1.1;
-          font-weight: 700;
-          color: var(--bw-metric);
-          letter-spacing: -0.02em;
-        }}
-        div[data-testid="stMetricValue"] {{ color: var(--bw-metric); }}
-        div[data-testid="stVerticalBlockBorderWrapper"] {{
-          background: var(--bw-surface);
-          border: 1px solid var(--bw-line);
-          border-radius: 14px;
-          padding: 0.85rem 1rem 1rem;
-          backdrop-filter: blur(8px);
-        }}
-        div.stButton > button {{
-          min-height: 44px;
-          border-radius: 10px;
-          font-family: "Figtree", sans-serif;
-          font-weight: 600;
-          background: transparent !important;
-          color: var(--bw-text) !important;
-          border: 1px solid var(--bw-line) !important;
-        }}
-        div.stButton > button[kind="primary"] {{
-          background: var(--bw-accent) !important;
-          border-color: var(--bw-accent) !important;
-          color: #04140e !important;
-        }}
-        .bw-run-wrap {{
-          position: sticky;
-          bottom: 0.5rem;
-          z-index: 20;
-          padding: 0.65rem 0 0.25rem;
-          background: linear-gradient(180deg, transparent, var(--bw-bg1) 35%);
-        }}
-        @media (max-width: 640px) {{
-          .bw-brand {{ font-size: 2.35rem; }}
-          .bw-tagline {{ font-size: 0.98rem; }}
-        }}
-        </style>
-        """
-    )
-
 
 def _init_state() -> None:
+    if "bw_dark" not in st.session_state:
+        st.session_state.bw_dark = False
     if "rider_kg" not in st.session_state:
         st.session_state.rider_kg = DEFAULT_RIDER_KG
     if "bike_kg" not in st.session_state:
@@ -960,10 +802,9 @@ def _on_reset_bike_mass() -> None:
 
 
 def _chart_colors(dark: bool) -> tuple[str, str, str, str]:
-    """Background, foreground, accent, spine for grey-canvas charts."""
-    if dark:
-        return "#0c1210", "#e7efea", "#3ecf8e", "#3a4a42"
-    return "#f7faf8", "#14201b", "#1a6b52", "#c5d0ca"
+    """Background, foreground, accent, spine for the shared theme."""
+    pal = chart_palette(dark)
+    return pal.chart_bg, pal.text, pal.accent, pal.spine
 
 
 def _style_speed_axes(ax, *, dark: bool, fig) -> tuple[str, str, str]:
@@ -975,7 +816,7 @@ def _style_speed_axes(ax, *, dark: bool, fig) -> tuple[str, str, str]:
     ax.tick_params(colors=fg)
     for sp in ax.spines.values():
         sp.set_color(spine)
-    ax.grid(True, alpha=0.22, color=fg)
+    ax.grid(True, alpha=0.45, color=spine)
     return bg, fg, accent
 
 
@@ -1563,8 +1404,8 @@ def main() -> None:
 
     top_l, top_r = st.columns([4, 1])
     with top_r:
-        dark = st.toggle("Dark", value=True, help="Dark / light")
-    _apply_theme(dark)
+        dark = st.toggle("Dark", key="bw_dark", help="Dark / light")
+    apply_theme(dark)
 
     with top_l:
         st.html(
@@ -2248,7 +2089,8 @@ def main() -> None:
                 )
 
         # --- Graph 1: power vs distance (watts used by the model) ---
-        power_color = "#c4a574" if dark else "#8a6a3d"
+        pal = chart_palette(dark)
+        power_color = pal.power
         fig_p, ax_p = plt.subplots(figsize=(9, 2.8))
         bg_p, fg_p, _accent_p = _style_power_axes(ax_p, dark=dark, fig=fig_p)
         plot_powers = whatif.powers_w if whatif.powers_w is not None else result.watts
@@ -2280,7 +2122,7 @@ def main() -> None:
         if result.distances_mi:
             ax_p.set_xlim(result.distances_mi[0], result.distances_mi[-1])
         leg_p = ax_p.legend(
-            facecolor=bg_p, edgecolor="#3a4a42" if dark else "#c5d0ca"
+            facecolor=bg_p, edgecolor=pal.spine
         )
         for text in leg_p.get_texts():
             text.set_color(fg_p)
@@ -2324,7 +2166,7 @@ def main() -> None:
                     result.distances_mi,
                     result.actual_speeds_mph,
                     label="Actual",
-                    color="#8fa398",
+                    color=pal.actual,
                     linewidth=1.8,
                     alpha=0.95,
                 )
@@ -2337,7 +2179,7 @@ def main() -> None:
                 ax2.set_xlim(result.distances_mi[0], result.distances_mi[-1])
             leg2 = ax2.legend(
                 facecolor=bg2,
-                edgecolor="#3a4a42" if dark else "#c5d0ca",
+                edgecolor=pal.spine,
             )
             for text in leg2.get_texts():
                 text.set_color(fg2)

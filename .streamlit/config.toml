@@ -1,0 +1,68 @@
+# Locked light theme. Colors match bike_wind.theme.LIGHT.
+# A [theme.light]/[theme.dark] pair would add Streamlit's own appearance
+# toggle and fight the in-app Dark control, so dark mode stays in theme.py.
+
+[theme]
+base = "light"
+primaryColor = "#0f6e4e"
+backgroundColor = "#f4f7f4"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#14241c"
+linkColor = "#0c5c42"
+borderColor = "#c5d5cc"
+codeTextColor = "#14241c"
+codeBackgroundColor = "#e7efe9"
+dataframeBorderColor = "#c5d5cc"
+dataframeHeaderBackgroundColor = "#e6efe9"
+dataframeHeaderTextColor = "#14241c"
+grayColor = "#4a6156"
+grayTextColor = "#3e5348"
+grayBackgroundColor = "#eef3f0"
+greenColor = "#0f6e4e"
+greenTextColor = "#0c4f38"
+greenBackgroundColor = "#e5f6ee"
+redColor = "#b42318"
+redTextColor = "#8f1d14"
+redBackgroundColor = "#fdecea"
+yellowColor = "#8a6400"
+yellowTextColor = "#6b4e00"
+yellowBackgroundColor = "#fff6d8"
+orangeColor = "#9a4d12"
+orangeTextColor = "#7a3e0e"
+orangeBackgroundColor = "#fff1e6"
+blueColor = "#1e4d6b"
+blueTextColor = "#163a52"
+blueBackgroundColor = "#e8f1f6"
+font = "Figtree:https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap"
+headingFont = "Syne:https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&display=swap"
+baseFontSize = 16
+baseFontWeight = 400
+headingFontWeights = [700, 700, 700, 600, 600, 600]
+baseRadius = "10px"
+buttonRadius = "10px"
+metricValueFontSize = "2rem"
+metricValueFontWeight = 700
+linkUnderline = false
+paddingTop = "1.1rem"
+paddingBottom = "2.75rem"
+showWidgetBorder = true
+showSidebarBorder = true
+chartCategoricalColors = ["#0f6e4e", "#1e4d6b", "#7a4e12", "#6b3f73", "#9b3a3a", "#3e5348", "#0c5c42"]
+chartSequentialColors = ["#e7f3ec", "#cfe6da", "#a9d3c2", "#7fbfa6", "#4f9d84", "#2f7d64", "#1d634d", "#14513f", "#0f3d30", "#0b2a21"]
+chartDivergingColors = ["#0f3d30", "#1d634d", "#4f9d84", "#a9d3c2", "#e7f3ec", "#fde8e4", "#f4b8ae", "#e07a6a", "#c4473a", "#8f241c"]
+
+[theme.sidebar]
+backgroundColor = "#e6efe9"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#14241c"
+primaryColor = "#0f6e4e"
+linkColor = "#0c5c42"
+borderColor = "#c5d5cc"
+codeTextColor = "#14241c"
+codeBackgroundColor = "#ffffff"
+dataframeBorderColor = "#c5d5cc"
+dataframeHeaderBackgroundColor = "#dce8e1"
+dataframeHeaderTextColor = "#14241c"
+grayTextColor = "#3e5348"
+paddingTop = "0.75rem"
+paddingBottom = "1.5rem"

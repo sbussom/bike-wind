@@ -123,7 +123,7 @@ def geolocation_redirect_html() -> str:
                color:#e7efea;font-weight:600;cursor:pointer;width:100%;">
         Use my location
       </button>
-      <p id="bw-geo-msg" style="color:#8fa398;font-size:0.85rem;margin:0.35rem 0 0;"></p>
+      <p id="bw-geo-msg" style="color:#3e5348;font-size:0.85rem;margin:0.35rem 0 0;"></p>
     </div>
     <script>
     (function () {

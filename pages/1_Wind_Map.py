@@ -42,6 +42,7 @@ from bike_wind.wind_field import (
     sample_point,
     subset_payload,
 )
+from bike_wind.theme import apply_theme
 from bike_wind.wind_map_html import build_wind_map_html
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -139,13 +140,12 @@ def when_label(t: datetime) -> str:
 
 
 def main() -> None:
+    apply_theme()
     st.html(
         """
-        <div style="margin:-0.5rem 0 0.25rem 0">
-          <p style="font-size:1.6rem;font-weight:800;margin:0">
-            <span style="color:#3fb950">Gusty</span><span style="color:#58a6ff">Power</span> wind map
-          </p>
-          <p style="margin:0;color:#8b949e">Forecast wind around your rides. Press play or drag the slider.</p>
+        <div class="bw-hero bw-hero-compact">
+          <p class="bw-brand">Gusty<span class="bw-accent-word">Power</span> wind map</p>
+          <p class="bw-tagline">Forecast wind around your rides. Press play or drag the slider.</p>
         </div>
         """
     )

@@ -76,7 +76,7 @@ _TEMPLATE = r"""<!doctype html>
   #legend{top:10px;right:10px;padding:6px 8px 4px;width:170px;}
   #legend .bar{height:9px;border-radius:5px;}
   #legend .ticks{display:flex;justify-content:space-between;font-size:10px;color:#c9d1d9;margin-top:2px;}
-  #legend .u{font-size:10px;color:#8b949e;text-align:right;}
+  #legend .u{font-size:10px;color:#d8e2ea;text-align:right;}
   #bar{left:10px;right:10px;bottom:10px;padding:8px 10px 6px;display:flex;align-items:center;gap:10px;}
   #play{flex:0 0 auto;width:42px;height:42px;border-radius:50%;border:0;cursor:pointer;
     background:#238636;color:#fff;font-size:17px;line-height:42px;padding:0;}
@@ -84,11 +84,11 @@ _TEMPLATE = r"""<!doctype html>
   #slide{flex:1 1 auto;min-width:0;}
   #when{font-size:13px;font-weight:600;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   input[type=range]{width:100%;margin:2px 0;accent-color:#3fb950;height:26px;}
-  #days{position:relative;height:13px;font-size:10px;color:#8b949e;}
+  #days{position:relative;height:13px;font-size:10px;color:#d8e2ea;}
   #days span{position:absolute;top:0;transform:translateX(-50%);white-space:nowrap;}
   .leaflet-control-zoom{margin-top:72px!important;}
-  .leaflet-control-attribution{font-size:9px!important;background:rgba(13,17,23,.6)!important;color:#8b949e!important;}
-  .leaflet-control-attribution a{color:#8b949e!important;}
+  .leaflet-control-attribution{font-size:9px!important;background:rgba(13,17,23,.75)!important;color:#d8e2ea!important;}
+  .leaflet-control-attribution a{color:#d8e2ea!important;}
   .leaflet-bottom.leaflet-right{bottom:78px;}
   @media (max-width:520px){
     #legend{width:130px;} #brand{max-width:58%;} #brand .r{font-size:11px;}
