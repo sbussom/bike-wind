@@ -877,6 +877,43 @@ def _validation_help_text(
 _POWER_MODE_RECORDED = "Recorded effort"
 _POWER_MODE_FLAT = "Flat slider watts"
 
+_MODE_PAST = "Past rides"
+_MODE_FUTURE = "Future prediction"
+
+
+def _pick_prediction_mode() -> str:
+    """Past vs future — segmented control when Streamlit has it, else radio."""
+    options = [_MODE_PAST, _MODE_FUTURE]
+    if "pred_mode" not in st.session_state:
+        st.session_state.pred_mode = _MODE_FUTURE
+    help_txt = (
+        "Past rides: replay recorded power and wind, compare to what you did. "
+        "Future prediction: next-week hourly weather on a segment or GPX."
+    )
+    if hasattr(st, "segmented_control"):
+        chosen = st.segmented_control(
+            "Prediction mode",
+            options=options,
+            key="pred_mode",
+            required=True,
+            label_visibility="collapsed",
+            help=help_txt,
+        )
+        return chosen if chosen in options else _MODE_FUTURE
+    return st.radio(
+        "Prediction mode",
+        options=options,
+        horizontal=True,
+        key="pred_mode",
+        label_visibility="collapsed",
+        help=help_txt,
+    )
+
+
+def _format_time_error_pct(error_pct: float) -> str:
+    """Signed percent for the results strip (+slow / −fast vs actual)."""
+    return f"{error_pct:+.1f}%"
+
 
 def _kom_time_s() -> float | None:
     """Strava KOM seconds from the loaded segment, or None. Never invented."""
@@ -1412,7 +1449,7 @@ def main() -> None:
             """
             <div class="bw-hero">
               <p class="bw-brand">Bike Wind</p>
-              <p class="bw-tagline">Predict ride time under wind.</p>
+              <p class="bw-tagline">Predicting how you will do on a route or segment</p>
             </div>
             """
         )
@@ -1421,6 +1458,19 @@ def main() -> None:
             st.page_link("pages/1_Wind_Map.py", label="Wind map", icon="🌬️")
         with link_exp:
             st.page_link("pages/2_Experimental.py", label="Experimental", icon="🧪")
+
+    pred_mode = _pick_prediction_mode()
+    past_mode = pred_mode == _MODE_PAST
+    if past_mode:
+        st.caption(
+            "Compare model time to a recorded ride or segment effort. "
+            "Uses archived wind at the ride start and recorded power when available."
+        )
+    else:
+        st.caption(
+            "Predict a segment or GPX under the next week's hourly forecast. "
+            "Same physics — power, wind, and grade."
+        )
 
     strava_cfg = load_strava_config()
     _sync_strava_secrets_fingerprint()
@@ -1472,8 +1522,7 @@ def main() -> None:
     if st.session_state.get("strava_oauth_error"):
         st.error(st.session_state.strava_oauth_error)
 
-    with st.container(border=True):
-        st.html('<p class="bw-section-label">Route</p>')
+    def _resolve_segment_from_input() -> None:
         st.caption("Segment link or ID — load a public Strava segment.")
         strava_ref_text = st.text_input(
             "Segment URL or ID",
@@ -1513,8 +1562,9 @@ def main() -> None:
             m = st.session_state.strava_meta
             st.caption(f"Using segment: **{m['name']}** · {m['segment_id']}")
 
+    def _past_ride_pickers() -> None:
         st.caption(
-            "Recent ride — Connect with Strava (allow activities) to load your track."
+            "Past Strava ride — Connect with Strava (allow activities) to load your track."
         )
         if activity_ok:
             _ensure_recent_rides(strava_cfg, limit=10)
@@ -1535,7 +1585,9 @@ def main() -> None:
                 placeholder=_RIDE_PLACEHOLDER,
                 on_change=_on_recent_ride_pick,
             )
-        recent_note = hidden_rides_note(int(st.session_state.get("recent_hidden_rides") or 0))
+        recent_note = hidden_rides_note(
+            int(st.session_state.get("recent_hidden_rides") or 0)
+        )
         if recent_note and activity_ok:
             st.caption(recent_note)
 
@@ -1553,7 +1605,9 @@ def main() -> None:
         ):
             try:
                 def _fetch_day(client: StravaClient):
-                    start = datetime(ride_day.year, ride_day.month, ride_day.day, tzinfo=timezone.utc)
+                    start = datetime(
+                        ride_day.year, ride_day.month, ride_day.day, tzinfo=timezone.utc
+                    )
                     end = start + timedelta(days=1)
                     per_page = 50
                     return collect_outdoor_rides(
@@ -1641,29 +1695,80 @@ def main() -> None:
         if st.session_state.get("activity_stream_error"):
             st.error(st.session_state.activity_stream_error)
 
-        st.caption("GPX — use your own file instead of a segment or ride.")
-        uploaded = st.file_uploader("GPX", type=["gpx"], label_visibility="collapsed")
-        use_sample = st.checkbox(
-            "Demo route",
-            value=(
-                uploaded is None
-                and st.session_state.get("route_source")
-                not in ("segment", "activity", "effort")
-            ),
-        )
+    with st.container(border=True):
+        st.html('<p class="bw-section-label">Route</p>')
+        if past_mode:
+            # Past: ride / effort first, then optional segment or GPX.
+            _past_ride_pickers()
+            with st.expander("Or load a segment / GPX", expanded=False):
+                _resolve_segment_from_input()
+                st.caption("GPX — use your own file instead of a segment or ride.")
+                uploaded = st.file_uploader(
+                    "GPX", type=["gpx"], label_visibility="collapsed", key="gpx_past"
+                )
+                use_sample = st.checkbox(
+                    "Demo route",
+                    value=(
+                        uploaded is None
+                        and st.session_state.get("route_source")
+                        not in ("segment", "activity", "effort")
+                    ),
+                    key="demo_past",
+                )
+        else:
+            # Future: segment / GPX first — no location picker.
+            _resolve_segment_from_input()
+            st.caption("GPX — use your own file instead of a segment.")
+            uploaded = st.file_uploader(
+                "GPX", type=["gpx"], label_visibility="collapsed", key="gpx_future"
+            )
+            use_sample = st.checkbox(
+                "Demo route",
+                value=(
+                    uploaded is None
+                    and st.session_state.get("route_source")
+                    not in ("segment", "activity", "effort")
+                ),
+                key="demo_future",
+            )
+            with st.expander("Or reuse a past ride as the course", expanded=False):
+                _past_ride_pickers()
 
     with st.container(border=True):
         st.html('<p class="bw-section-label">Rider</p>')
-        when = pick_utc_when(
-            "When (UTC)",
-            key="when_utc",
-            default=datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-            + timedelta(hours=3),
-            quick=(("Today", 0), ("Tomorrow", 1)),
-        )
-        st.caption(
-            "Forecast time for a future attempt. A timed GPX or Strava ride uses its start time for wind instead."
-        )
+        if past_mode:
+            # Wind comes from the ride start / archive when the track is timed.
+            when = pick_utc_when(
+                "When (UTC) — only if the file has no start time",
+                key="when_utc",
+                default=datetime.now(timezone.utc).replace(
+                    minute=0, second=0, microsecond=0
+                )
+                - timedelta(days=1),
+                quick=(("Yesterday", -1), ("Today", 0)),
+            )
+            st.caption(
+                "A timed Strava ride or GPX uses its start for archive wind. "
+                "This clock is only a fallback."
+            )
+        else:
+            when = pick_utc_when(
+                "Start (UTC) — next week, hourly",
+                key="when_utc",
+                default=datetime.now(timezone.utc).replace(
+                    minute=0, second=0, microsecond=0
+                )
+                + timedelta(hours=3),
+                quick=(
+                    ("Today", 0),
+                    ("Tomorrow", 1),
+                    ("+3d", 3),
+                    ("+7d", 7),
+                ),
+            )
+            st.caption(
+                "Hourly Open-Meteo forecast when available. Same physics as past rides."
+            )
         labels = position_labels()
         current_label = POSITION_PRESETS[st.session_state.position_key].label
         chosen = st.radio(
@@ -1780,6 +1885,9 @@ def main() -> None:
             st.error(st.session_state.strava_last_error)
 
     last_run = st.session_state.get("_last_run")
+    if last_run and last_run.get("pred_mode") not in (None, pred_mode):
+        # Keep the other mode's snapshot in session; don't show it here.
+        last_run = None
     if not run and not last_run:
         return
 
@@ -1899,6 +2007,7 @@ def main() -> None:
             "surface_label": surface.label,
             "crr_note": surface.estimate_note,
             "when_utc": when_dt.isoformat(),
+            "pred_mode": pred_mode,
         }
         source_label_out = source_label
         route_km = route.distances_m[-1] / 1000.0
@@ -1921,8 +2030,9 @@ def main() -> None:
 
     with st.container(border=True):
         st.html('<p class="bw-section-label">Results</p>')
+        mode_note = "Past check" if past_mode else "Future forecast"
         st.caption(
-            f"{source_label_out} · {route_km:.1f} km · "
+            f"{mode_note} · {source_label_out} · {route_km:.1f} km · "
             f"{POSITION_PRESETS[position_key_out].label} · Cd·A={cda_out:.3f} · "
             f"Crr={result.params.crr:.4f}"
         )
@@ -1996,32 +2106,81 @@ def main() -> None:
                 whatif.speeds_with_wind_mps,
             )
         actual_s = result.actual_elapsed_s
-        actual_html = (
-            f"""
+        time_grade = (
+            score_segment_time(float(whatif.eta_with_wind_s), float(actual_s))
+            if past_mode and actual_s is not None
+            else None
+        )
+        if past_mode:
+            actual_html = (
+                f"""
               <div class="bw-time-block">
                 <p class="bw-time-label">Actual</p>
                 <p class="bw-time-value">{format_duration(actual_s)}</p>
               </div>
             """
-            if actual_s is not None
-            else """
+                if actual_s is not None
+                else """
               <div class="bw-time-block">
                 <p class="bw-time-label">Actual</p>
                 <p class="bw-time-value">—</p>
               </div>
             """
-        )
-        st.html(
-            f"""
+            )
+            error_html = (
+                f"""
+              <div class="bw-time-block">
+                <p class="bw-time-label">Error</p>
+                <p class="bw-time-value">{_format_time_error_pct(time_grade.error_pct)}</p>
+              </div>
+            """
+                if time_grade is not None
+                else """
+              <div class="bw-time-block">
+                <p class="bw-time-label">Error</p>
+                <p class="bw-time-value">—</p>
+              </div>
+            """
+            )
+            st.html(
+                f"""
             <div class="bw-time-row">
               <div class="bw-time-block">
                 <p class="bw-time-label">Predicted</p>
                 <p class="bw-time-value">{format_duration(whatif.eta_with_wind_s)}</p>
               </div>
               {actual_html}
+              {error_html}
             </div>
             """
-        )
+            )
+            if time_grade is not None:
+                gate = (
+                    "within ±5%"
+                    if time_grade.passed
+                    else "outside ±5% gate"
+                )
+                st.caption(
+                    f"Predicted − actual = {time_grade.error_s:+.0f}s "
+                    f"({_format_time_error_pct(time_grade.error_pct)}, {gate}). "
+                    "Isolated to the selected ride or segment effort."
+                )
+            elif st.session_state.get("route_source") in ("activity", "effort"):
+                st.caption(
+                    "No usable actual time on this selection — pick a segment effort "
+                    "or a ride with moving time."
+                )
+        else:
+            st.html(
+                f"""
+            <div class="bw-time-row">
+              <div class="bw-time-block">
+                <p class="bw-time-label">Predicted</p>
+                <p class="bw-time-value">{format_duration(whatif.eta_with_wind_s)}</p>
+              </div>
+            </div>
+            """
+            )
         if whatif.used_recorded_power:
             power_caption = (
                 f"Power source: recorded effort (mean {whatif.power_w:.0f} W)"
@@ -2039,20 +2198,25 @@ def main() -> None:
         if clock is not None and clock.stops:
             st.caption(clock.summary())
 
-        _render_pacing(
-            result,
-            avg_power_w=float(whatif_power),
-            wind_speed_mps=float(whatif_wind_mph) / 2.236936,
-            grade_scale=float(whatif_grade_pct) / 100.0,
-            when_utc=when_utc_out,
-            recorded_power=bool(use_recorded),
-            predicted_s=float(whatif.eta_with_wind_s),
-            source_label=source_label_out,
-        )
+        if not past_mode:
+            _render_pacing(
+                result,
+                avg_power_w=float(whatif_power),
+                wind_speed_mps=float(whatif_wind_mph) / 2.236936,
+                grade_scale=float(whatif_grade_pct) / 100.0,
+                when_utc=when_utc_out,
+                recorded_power=bool(use_recorded),
+                predicted_s=float(whatif.eta_with_wind_s),
+                source_label=source_label_out,
+            )
 
         head_l, head_mid, head_r = st.columns([4, 1, 1])
         with head_l:
-            st.caption("Power file used · then predicted vs actual speed")
+            st.caption(
+                "Power file used · predicted vs actual speed"
+                if past_mode
+                else "Predicted speed along the route (mph)"
+            )
         with head_mid:
             with st.popover("Equations"):
                 try:
