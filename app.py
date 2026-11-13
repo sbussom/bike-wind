@@ -877,42 +877,154 @@ def _validation_help_text(
 _POWER_MODE_RECORDED = "Recorded effort"
 _POWER_MODE_FLAT = "Flat slider watts"
 
-_MODE_PAST = "Past rides"
-_MODE_FUTURE = "Future prediction"
+_MODE_PAST = "Past ride analysis"
+_MODE_FUTURE = "Future ride prediction"
+# Older session snapshots used shorter labels.
+_PAST_MODE_ALIASES = {_MODE_PAST, "Past rides"}
+_FUTURE_MODE_ALIASES = {_MODE_FUTURE, "Future prediction"}
 
 
-def _pick_prediction_mode() -> str:
-    """Past vs future — segmented control when Streamlit has it, else radio."""
-    options = [_MODE_PAST, _MODE_FUTURE]
-    if "pred_mode" not in st.session_state:
-        st.session_state.pred_mode = _MODE_FUTURE
-    help_txt = (
-        "Past rides: replay recorded power and wind, compare to what you did. "
-        "Future prediction: next-week hourly weather on a segment or GPX."
-    )
-    if hasattr(st, "segmented_control"):
-        chosen = st.segmented_control(
-            "Prediction mode",
-            options=options,
-            key="pred_mode",
-            required=True,
-            label_visibility="collapsed",
-            help=help_txt,
-        )
-        return chosen if chosen in options else _MODE_FUTURE
-    return st.radio(
-        "Prediction mode",
-        options=options,
-        horizontal=True,
-        key="pred_mode",
-        label_visibility="collapsed",
-        help=help_txt,
-    )
+def _is_past_mode(mode: str | None) -> bool:
+    return mode in _PAST_MODE_ALIASES
 
 
 def _format_time_error_pct(error_pct: float) -> str:
     """Signed percent for the results strip (+slow / −fast vs actual)."""
     return f"{error_pct:+.1f}%"
+
+
+def _panel_rider_controls(*, key_prefix: str):
+    """Position / surface / clothing / power / mass for one mode panel."""
+    labels = position_labels()
+    current_label = POSITION_PRESETS[st.session_state.position_key].label
+    pos_key = f"{key_prefix}_position"
+    if pos_key not in st.session_state:
+        st.session_state[pos_key] = (
+            current_label if current_label in labels else labels[0]
+        )
+    chosen = st.radio("Position", options=labels, key=pos_key)
+    position_key = position_key_for_label(chosen)
+    if position_key != st.session_state.position_key:
+        st.session_state.position_key = position_key
+        if not st.session_state.bike_mass_manual:
+            _apply_bike_kg(POSITION_PRESETS[position_key].bike_mass_kg, manual=False)
+
+    surf_labels = surface_labels()
+    current_surf = SURFACE_PRESETS[st.session_state.surface_key].label
+    surf_key = f"{key_prefix}_surface"
+    if surf_key not in st.session_state:
+        st.session_state[surf_key] = (
+            current_surf if current_surf in surf_labels else surf_labels[0]
+        )
+    surf_chosen = st.radio(
+        "Surface / Crr",
+        options=surf_labels,
+        key=surf_key,
+        help="Rolling resistance. Packed-sand gravel value is an estimate, not a lab test.",
+    )
+    surface_key = surface_key_for_label(surf_chosen)
+    st.session_state.surface_key = surface_key
+    surface = resolve_surface(surface_key)
+    st.caption(
+        f"Crr = {surface.crr:.4f}"
+        + (f" · {surface.estimate_note}" if surface.estimate_note else "")
+    )
+
+    cloth_labels = clothing_labels()
+    current_cloth = CLOTHING_PRESETS[st.session_state.clothing_key].label
+    cloth_key = f"{key_prefix}_clothing"
+    if cloth_key not in st.session_state:
+        st.session_state[cloth_key] = (
+            current_cloth if current_cloth in cloth_labels else cloth_labels[0]
+        )
+    cloth_chosen = st.radio(
+        "Clothing",
+        options=cloth_labels,
+        key=cloth_key,
+        help=(
+            "Cd·A multiplier. Skin-tight = 1.00 (default, unchanged predictions). "
+            "Loose jersey ≈ +8%. Manual — Strava has no clothing field."
+        ),
+    )
+    clothing_key = clothing_key_for_label(cloth_chosen)
+    if clothing_key != st.session_state.clothing_key:
+        st.session_state.clothing_key = clothing_key
+        save_rider_config({"clothing_key": clothing_key})
+    clothing = resolve_clothing(st.session_state.clothing_key)
+    st.caption(
+        f"Cd·A × {clothing.cda_multiplier:.2f}"
+        + (f" · {clothing.note}" if clothing.note else "")
+    )
+
+    power_key = f"{key_prefix}_power"
+    if power_key not in st.session_state:
+        st.session_state[power_key] = int(st.session_state.power_w)
+    power_w = st.slider("Power (W)", min_value=80, max_value=450, step=5, key=power_key)
+    st.session_state.power_w = int(power_w)
+
+    kg_key = f"{key_prefix}_rider_kg"
+    lb_key = f"{key_prefix}_rider_lb"
+    if kg_key not in st.session_state:
+        st.session_state[kg_key] = float(st.session_state.rider_kg)
+    if lb_key not in st.session_state:
+        st.session_state[lb_key] = round(kg_to_lb(st.session_state.rider_kg), 1)
+
+    def _sync_kg() -> None:
+        st.session_state.rider_kg = float(st.session_state[kg_key])
+        st.session_state[lb_key] = round(kg_to_lb(st.session_state.rider_kg), 1)
+        st.session_state.rider_kg_input = float(st.session_state.rider_kg)
+        st.session_state.rider_lb_input = float(st.session_state[lb_key])
+        if not st.session_state.height_manual:
+            st.session_state.height_cm = smart_default_height_cm(st.session_state.rider_kg)
+            st.session_state.height_cm_input = float(st.session_state.height_cm)
+
+    def _sync_lb() -> None:
+        st.session_state.rider_kg = lb_to_kg(float(st.session_state[lb_key]))
+        st.session_state[kg_key] = float(st.session_state.rider_kg)
+        st.session_state.rider_kg_input = float(st.session_state.rider_kg)
+        st.session_state.rider_lb_input = float(st.session_state[lb_key])
+        if not st.session_state.height_manual:
+            st.session_state.height_cm = smart_default_height_cm(st.session_state.rider_kg)
+            st.session_state.height_cm_input = float(st.session_state.height_cm)
+
+    w1, w2 = st.columns(2)
+    with w1:
+        st.number_input(
+            "Rider kg",
+            min_value=40.0,
+            max_value=120.0,
+            step=0.5,
+            key=kg_key,
+            on_change=_sync_kg,
+        )
+    with w2:
+        st.number_input(
+            "Rider lb",
+            min_value=90.0,
+            max_value=265.0,
+            step=1.0,
+            key=lb_key,
+            on_change=_sync_lb,
+        )
+    st.session_state.rider_kg = float(st.session_state[kg_key])
+
+    aero = resolve_aero(
+        st.session_state.position_key,
+        full_aero_kit=bool(st.session_state.get("full_aero_kit", False)),
+        non_aero=bool(st.session_state.get("non_aero", False)),
+        bike_mass_kg=float(st.session_state.bike_kg),
+    )
+    clothing = resolve_clothing(st.session_state.clothing_key)
+    cda_used = aero.cd * aero.area_m2 * clothing.cda_multiplier
+    st.caption(
+        f"{POSITION_PRESETS[aero.position_key].label} · "
+        f"Cd·A={cda_used:.3f} (×{clothing.cda_multiplier:.2f} clothing"
+        f"{'; lower when pushing hard, ~0.48 at 250 W' if aero.power_cda else ''}) · "
+        f"Crr={surface.crr:.4f} · "
+        f"{st.session_state.rider_kg:.0f}+{aero.bike_mass_kg:.0f}="
+        f"{st.session_state.rider_kg + aero.bike_mass_kg:.0f} kg"
+    )
+    return float(power_w), surface, aero
 
 
 def _kom_time_s() -> float | None:
@@ -1459,19 +1571,6 @@ def main() -> None:
         with link_exp:
             st.page_link("pages/2_Experimental.py", label="Experimental", icon="🧪")
 
-    pred_mode = _pick_prediction_mode()
-    past_mode = pred_mode == _MODE_PAST
-    if past_mode:
-        st.caption(
-            "Compare model time to a recorded ride or segment effort. "
-            "Uses archived wind at the ride start and recorded power when available."
-        )
-    else:
-        st.caption(
-            "Predict a segment or GPX under the next week's hourly forecast. "
-            "Same physics — power, wind, and grade."
-        )
-
     strava_cfg = load_strava_config()
     _sync_strava_secrets_fingerprint()
     _handle_oauth_callback(strava_cfg)
@@ -1482,8 +1581,9 @@ def main() -> None:
     connected = bool(st.session_state.get("strava_oauth_connected"))
     activity_ok = _session_has_activity_read()
     needs_activity_reconnect = connected and not activity_ok
+    prefer_hrrr = hrrr_enabled_by_env()
 
-    # Compact Connect / Disconnect — not a hero.
+    # Connect with Strava sits above the two closed mode panels.
     conn_l, conn_r = st.columns([3, 2])
     with conn_l:
         if activity_ok:
@@ -1491,7 +1591,7 @@ def main() -> None:
         elif needs_activity_reconnect:
             st.caption(ACTIVITY_SCOPE_HINT)
         elif oauth_ok:
-            st.caption("Optional: connect your Strava for personal rides.")
+            st.caption("Connect Strava for personal rides and past-ride checks.")
         else:
             st.caption("Strava connect needs client_id / secret in secrets.")
     with conn_r:
@@ -1522,18 +1622,19 @@ def main() -> None:
     if st.session_state.get("strava_oauth_error"):
         st.error(st.session_state.strava_oauth_error)
 
-    def _resolve_segment_from_input() -> None:
+    def _resolve_segment_from_input(*, key_prefix: str) -> None:
         st.caption("Segment link or ID — load a public Strava segment.")
         strava_ref_text = st.text_input(
             "Segment URL or ID",
             placeholder="https://www.strava.com/segments/229781",
-            key="strava_ref_input",
+            key=f"{key_prefix}_strava_ref",
             label_visibility="collapsed",
         )
         do_resolve = st.button(
             "Load segment",
             disabled=not strava_ready or not strava_ref_text.strip(),
             use_container_width=True,
+            key=f"{key_prefix}_load_segment",
         )
         if do_resolve and strava_ready and strava_ref_text.strip():
             try:
@@ -1563,9 +1664,7 @@ def main() -> None:
             st.caption(f"Using segment: **{m['name']}** · {m['segment_id']}")
 
     def _past_ride_pickers() -> None:
-        st.caption(
-            "Past Strava ride — Connect with Strava (allow activities) to load your track."
-        )
+        st.caption("Load a past Strava ride, then optionally isolate a segment effort.")
         if activity_ok:
             _ensure_recent_rides(strava_cfg, limit=10)
         elif needs_activity_reconnect:
@@ -1576,7 +1675,6 @@ def main() -> None:
         )
         if activities:
             label_map = {ride_activity_label(a): a for a in activities}
-            # Maps must exist before on_change fires on the next run.
             st.session_state._recent_label_map = label_map
             visible_choice(
                 "Recent rides",
@@ -1673,7 +1771,6 @@ def main() -> None:
                     f"Track loaded: **{act.name}** · {ride_activity_label(act)}"
                     + (f" · {n_pts} pts" if n_pts else "")
                 )
-            # Segment efforts on this ride → choosing one loads that segment's GPS.
             if st.session_state.get("_efforts_activity_id") != act.activity_id:
                 _fetch_activity_efforts(strava_cfg, act.activity_id)
             efforts: list[SegmentEffortSummary] = list(
@@ -1695,175 +1792,116 @@ def main() -> None:
         if st.session_state.get("activity_stream_error"):
             st.error(st.session_state.activity_stream_error)
 
-    with st.container(border=True):
-        st.html('<p class="bw-section-label">Route</p>')
-        if past_mode:
-            # Past: ride / effort first, then optional segment or GPX.
-            _past_ride_pickers()
-            with st.expander("Or load a segment / GPX", expanded=False):
-                _resolve_segment_from_input()
-                st.caption("GPX — use your own file instead of a segment or ride.")
-                uploaded = st.file_uploader(
-                    "GPX", type=["gpx"], label_visibility="collapsed", key="gpx_past"
-                )
-                use_sample = st.checkbox(
-                    "Demo route",
-                    value=(
-                        uploaded is None
-                        and st.session_state.get("route_source")
-                        not in ("segment", "activity", "effort")
-                    ),
-                    key="demo_past",
-                )
-        else:
-            # Future: segment / GPX first — no location picker.
-            _resolve_segment_from_input()
-            st.caption("GPX — use your own file instead of a segment.")
-            uploaded = st.file_uploader(
-                "GPX", type=["gpx"], label_visibility="collapsed", key="gpx_future"
+    # Defaults when neither panel runs this turn (results reuse last_run).
+    uploaded = None
+    use_sample = True
+    when = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    power_w = float(st.session_state.power_w)
+    surface = resolve_surface(st.session_state.surface_key)
+    aero = resolve_aero(
+        st.session_state.position_key,
+        full_aero_kit=bool(st.session_state.get("full_aero_kit", False)),
+        non_aero=bool(st.session_state.get("non_aero", False)),
+        bike_mass_kg=float(st.session_state.bike_kg),
+    )
+    run = False
+    pred_mode = st.session_state.get("pred_mode") or _MODE_FUTURE
+
+    with st.expander(_MODE_PAST, expanded=False):
+        st.caption(
+            "Physics check on a recorded ride or segment effort: archive wind at "
+            "the ride start, recorded power when available, then predicted vs actual "
+            "time with percent error. No next-week forecast here."
+        )
+        _past_ride_pickers()
+        with st.expander("Or load a segment / GPX", expanded=False):
+            _resolve_segment_from_input(key_prefix="past")
+            st.caption("GPX — use your own file instead of a segment or ride.")
+            past_uploaded = st.file_uploader(
+                "GPX", type=["gpx"], label_visibility="collapsed", key="gpx_past"
             )
-            use_sample = st.checkbox(
+            past_sample = st.checkbox(
                 "Demo route",
                 value=(
-                    uploaded is None
+                    past_uploaded is None
                     and st.session_state.get("route_source")
                     not in ("segment", "activity", "effort")
                 ),
-                key="demo_future",
+                key="demo_past",
             )
-            with st.expander("Or reuse a past ride as the course", expanded=False):
-                _past_ride_pickers()
-
-    with st.container(border=True):
-        st.html('<p class="bw-section-label">Rider</p>')
-        if past_mode:
-            # Wind comes from the ride start / archive when the track is timed.
-            when = pick_utc_when(
-                "When (UTC) — only if the file has no start time",
-                key="when_utc",
-                default=datetime.now(timezone.utc).replace(
-                    minute=0, second=0, microsecond=0
-                )
-                - timedelta(days=1),
-                quick=(("Yesterday", -1), ("Today", 0)),
-            )
-            st.caption(
-                "A timed Strava ride or GPX uses its start for archive wind. "
-                "This clock is only a fallback."
-            )
-        else:
-            when = pick_utc_when(
-                "Start (UTC) — next week, hourly",
-                key="when_utc",
-                default=datetime.now(timezone.utc).replace(
-                    minute=0, second=0, microsecond=0
-                )
-                + timedelta(hours=3),
-                quick=(
-                    ("Today", 0),
-                    ("Tomorrow", 1),
-                    ("+3d", 3),
-                    ("+7d", 7),
-                ),
-            )
-            st.caption(
-                "Hourly Open-Meteo forecast when available. Same physics as past rides."
-            )
-        labels = position_labels()
-        current_label = POSITION_PRESETS[st.session_state.position_key].label
-        chosen = st.radio(
-            "Position",
-            options=labels,
-            index=labels.index(current_label) if current_label in labels else 0,
+        past_power, past_surface, past_aero = _panel_rider_controls(key_prefix="past")
+        run_past = st.button(
+            "Run past check", type="primary", use_container_width=True, key="run_past"
         )
-        position_key = position_key_for_label(chosen)
-        if position_key != st.session_state.position_key:
-            st.session_state.position_key = position_key
-            if not st.session_state.bike_mass_manual:
-                _apply_bike_kg(POSITION_PRESETS[position_key].bike_mass_kg, manual=False)
+        if run_past:
+            run = True
+            pred_mode = _MODE_PAST
+            st.session_state.pred_mode = pred_mode
+            uploaded = past_uploaded
+            use_sample = bool(past_sample)
+            power_w = past_power
+            surface = past_surface
+            aero = past_aero
+            # Timed rides use start time for archive wind inside predict_speeds.
+            when = datetime.now(timezone.utc).replace(
+                minute=0, second=0, microsecond=0
+            )
 
-        surf_labels = surface_labels()
-        current_surf = SURFACE_PRESETS[st.session_state.surface_key].label
-        surf_chosen = st.radio(
-            "Surface / Crr",
-            options=surf_labels,
-            index=surf_labels.index(current_surf) if current_surf in surf_labels else 0,
-            help="Rolling resistance. Packed-sand gravel value is an estimate, not a lab test.",
-        )
-        surface_key = surface_key_for_label(surf_chosen)
-        st.session_state.surface_key = surface_key
-        surface = resolve_surface(surface_key)
+    with st.expander(_MODE_FUTURE, expanded=False):
         st.caption(
-            f"Crr = {surface.crr:.4f}"
-            + (f" · {surface.estimate_note}" if surface.estimate_note else "")
+            "Predict a segment or GPX under the next week's hourly forecast. "
+            "Same physics engine — power, wind, and grade."
         )
-
-        cloth_labels = clothing_labels()
-        current_cloth = CLOTHING_PRESETS[st.session_state.clothing_key].label
-        cloth_chosen = st.radio(
-            "Clothing",
-            options=cloth_labels,
-            index=cloth_labels.index(current_cloth) if current_cloth in cloth_labels else 0,
-            help=(
-                "Cd·A multiplier. Skin-tight = 1.00 (default, unchanged predictions). "
-                "Loose jersey ≈ +8%. Manual — Strava has no clothing field."
+        _resolve_segment_from_input(key_prefix="future")
+        st.caption("GPX — use your own file instead of a segment.")
+        future_uploaded = st.file_uploader(
+            "GPX", type=["gpx"], label_visibility="collapsed", key="gpx_future"
+        )
+        future_sample = st.checkbox(
+            "Demo route",
+            value=(
+                future_uploaded is None
+                and st.session_state.get("route_source")
+                not in ("segment", "activity", "effort")
+            ),
+            key="demo_future",
+        )
+        future_when = pick_utc_when(
+            "Start (UTC) — next week, hourly",
+            key="when_utc_future",
+            default=datetime.now(timezone.utc).replace(
+                minute=0, second=0, microsecond=0
+            )
+            + timedelta(hours=3),
+            quick=(
+                ("Today", 0),
+                ("Tomorrow", 1),
+                ("+3d", 3),
+                ("+7d", 7),
             ),
         )
-        clothing_key = clothing_key_for_label(cloth_chosen)
-        if clothing_key != st.session_state.clothing_key:
-            st.session_state.clothing_key = clothing_key
-            save_rider_config({"clothing_key": clothing_key})
-        clothing = resolve_clothing(st.session_state.clothing_key)
-        st.caption(
-            f"Cd·A × {clothing.cda_multiplier:.2f}"
-            + (f" · {clothing.note}" if clothing.note else "")
+        st.caption("Hourly Open-Meteo forecast when available.")
+        future_power, future_surface, future_aero = _panel_rider_controls(
+            key_prefix="future"
         )
-
-        power_w = st.slider("Power (W)", 80, 450, int(st.session_state.power_w), 5)
-        st.session_state.power_w = power_w
-
-        w1, w2 = st.columns(2)
-        with w1:
-            st.number_input(
-                "Rider kg",
-                min_value=40.0,
-                max_value=120.0,
-                step=0.5,
-                key="rider_kg_input",
-                on_change=_on_rider_kg,
-            )
-        with w2:
-            st.number_input(
-                "Rider lb",
-                min_value=90.0,
-                max_value=265.0,
-                step=1.0,
-                key="rider_lb_input",
-                on_change=_on_rider_lb,
-            )
-        st.session_state.rider_kg = float(st.session_state.rider_kg_input)
-
-        full_aero = st.session_state.get("full_aero_kit", False)
-        non_aero = st.session_state.get("non_aero", False)
-        prefer_hrrr = hrrr_enabled_by_env()
-        aero = resolve_aero(
-            st.session_state.position_key,
-            full_aero_kit=bool(full_aero),
-            non_aero=bool(non_aero),
-            bike_mass_kg=float(st.session_state.bike_kg),
+        run_future = st.button(
+            "Run prediction",
+            type="primary",
+            use_container_width=True,
+            key="run_future",
         )
-        clothing = resolve_clothing(st.session_state.clothing_key)
-        cda_used = aero.cd * aero.area_m2 * clothing.cda_multiplier
-        st.caption(
-            f"{POSITION_PRESETS[aero.position_key].label} · "
-            f"Cd·A={cda_used:.3f} (×{clothing.cda_multiplier:.2f} clothing"
-            f"{'; lower when pushing hard, ~0.48 at 250 W' if aero.power_cda else ''}) · "
-            f"Crr={surface.crr:.4f} · "
-            f"{st.session_state.rider_kg:.0f}+{aero.bike_mass_kg:.0f}="
-            f"{st.session_state.rider_kg + aero.bike_mass_kg:.0f} kg"
-        )
+        if run_future:
+            run = True
+            pred_mode = _MODE_FUTURE
+            st.session_state.pred_mode = pred_mode
+            uploaded = future_uploaded
+            use_sample = bool(future_sample)
+            power_w = future_power
+            surface = future_surface
+            aero = future_aero
+            when = future_when
 
-        run = st.button("Run", type="primary", use_container_width=True)
+    past_mode = _is_past_mode(pred_mode)
 
     with st.expander("Troubleshooting", expanded=False):
         st.button(
@@ -1885,17 +1923,36 @@ def main() -> None:
             st.error(st.session_state.strava_last_error)
 
     last_run = st.session_state.get("_last_run")
-    if last_run and last_run.get("pred_mode") not in (None, pred_mode):
+    if (
+        last_run
+        and not run
+        and last_run.get("pred_mode") not in (None, pred_mode)
+        and not (
+            _is_past_mode(last_run.get("pred_mode")) and _is_past_mode(pred_mode)
+        )
+        and not (
+            last_run.get("pred_mode") in _FUTURE_MODE_ALIASES
+            and pred_mode in _FUTURE_MODE_ALIASES
+        )
+    ):
         # Keep the other mode's snapshot in session; don't show it here.
         last_run = None
+    if not run and last_run:
+        pred_mode = last_run.get("pred_mode") or pred_mode
+        past_mode = _is_past_mode(pred_mode)
     if not run and not last_run:
         return
 
-    use_effort = st.session_state.get("route_source") == "effort" and bool(
-        st.session_state.get("selected_effort")
+    # Past panel owns ride/effort tracks; future sticks to segment / GPX / demo.
+    use_effort = (
+        past_mode
+        and st.session_state.get("route_source") == "effort"
+        and bool(st.session_state.get("selected_effort"))
     )
-    use_activity = st.session_state.get("route_source") == "activity" and bool(
-        st.session_state.get("selected_activity")
+    use_activity = (
+        past_mode
+        and st.session_state.get("route_source") == "activity"
+        and bool(st.session_state.get("selected_activity"))
     )
     use_strava = st.session_state.get("route_source") == "segment" and bool(
         st.session_state.get("strava_segment_id")
@@ -1963,7 +2020,6 @@ def main() -> None:
             return
 
         route = downsample_route(route, max_points=300)
-        surface = resolve_surface(st.session_state.surface_key)
         clothing = resolve_clothing(st.session_state.clothing_key)
         from bike_wind.calibration.cda_defaults import YAW_CDA_ENABLED
 
