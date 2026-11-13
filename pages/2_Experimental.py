@@ -51,6 +51,7 @@ from bike_wind.rider import (
 )
 from bike_wind.strava import StravaAuthError, StravaClient, StravaError, load_strava_config
 from bike_wind.strava.oauth import scope_has_activity_read
+from bike_wind.theme import apply_theme, theme_is_dark
 from bike_wind.weather import hrrr_enabled_by_env
 
 st.set_page_config(
@@ -305,7 +306,7 @@ def _show_clock_chart(result) -> None:
         return
     if chart.stops:
         st.caption(chart.summary())
-    fig = figure_clock_speed(chart, dark=True)
+    fig = figure_clock_speed(chart, dark=theme_is_dark())
     st.pyplot(fig)
     plt.close(fig)
     st.caption(chart.caption)
@@ -317,7 +318,7 @@ def _show_wind_chart(result) -> None:
     if chart is None:
         st.caption("No forecast wind to graph for this run.")
         return
-    fig = figure_wind_along(chart, dark=True)
+    fig = figure_wind_along(chart, dark=theme_is_dark())
     st.pyplot(fig)
     plt.close(fig)
     st.caption(chart.caption)
@@ -367,6 +368,7 @@ def _render_results(payload: dict) -> None:
 
 def main() -> None:
     _init_widgets()
+    apply_theme()
     st.title("Experimental")
     st.warning(
         "These setups are experimental and are not part of the validated production model. "

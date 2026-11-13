@@ -107,14 +107,12 @@ def figure_wind_along(chart: WindAlongChart, *, dark: bool = True):
     """Matplotlib figure. Caller closes it."""
     import matplotlib.pyplot as plt
 
-    if dark:
-        bg, fg, accent, spine = "#0c1210", "#e7efea", "#3ecf8e", "#3a4a42"
-        gust_color = "#e0b15a"
-        zero = "#8fa398"
-    else:
-        bg, fg, accent, spine = "#f7faf8", "#14201b", "#1a6b52", "#c5d0ca"
-        gust_color = "#8a6a3d"
-        zero = "#5c6f66"
+    from bike_wind.theme import chart_palette
+
+    pal = chart_palette(dark)
+    bg, fg, accent, spine = pal.chart_bg, pal.text, pal.accent, pal.spine
+    gust_color = pal.power
+    zero = pal.muted
     fig, ax = plt.subplots(figsize=(9, 3.0))
     fig.patch.set_facecolor(bg)
     ax.set_facecolor(bg)
@@ -163,7 +161,7 @@ def figure_wind_along(chart: WindAlongChart, *, dark: bool = True):
     ax.tick_params(colors=fg)
     for sp in ax.spines.values():
         sp.set_color(spine)
-    ax.grid(True, alpha=0.22, color=fg)
+    ax.grid(True, alpha=0.45, color=spine)
     leg = ax.legend(facecolor=bg, edgecolor=spine, fontsize=8)
     for text in leg.get_texts():
         text.set_color(fg)

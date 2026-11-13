@@ -208,14 +208,12 @@ def figure_clock_speed(chart: ClockSpeedChart, *, dark: bool = True):
     """Matplotlib figure. Caller closes it."""
     import matplotlib.pyplot as plt
 
-    if dark:
-        bg, fg, accent, spine = "#0c1210", "#e7efea", "#3ecf8e", "#3a4a42"
-        actual = "#8fa398"
-        shade = "#c45c26"
-    else:
-        bg, fg, accent, spine = "#f7faf8", "#14201b", "#1a6b52", "#c5d0ca"
-        actual = "#5c6f66"
-        shade = "#c45c26"
+    from bike_wind.theme import chart_palette
+
+    pal = chart_palette(dark)
+    bg, fg, accent, spine = pal.chart_bg, pal.text, pal.accent, pal.spine
+    actual = pal.actual
+    shade = pal.shade
     minutes = [t / 60.0 for t in chart.elapsed_s]
     fig, ax = plt.subplots(figsize=(9, 3.2))
     fig.patch.set_facecolor(bg)
@@ -251,7 +249,7 @@ def figure_clock_speed(chart: ClockSpeedChart, *, dark: bool = True):
     ax.tick_params(colors=fg)
     for sp in ax.spines.values():
         sp.set_color(spine)
-    ax.grid(True, alpha=0.22, color=fg)
+    ax.grid(True, alpha=0.45, color=spine)
     leg = ax.legend(facecolor=bg, edgecolor=spine, fontsize=8)
     for text in leg.get_texts():
         text.set_color(fg)
