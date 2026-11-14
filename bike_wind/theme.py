@@ -12,7 +12,9 @@ WCAG AA, and the old dark canvas sat under light-theme body text (~1.5:1).
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,8 @@ class ThemeColors:
     input_text: str
     glow: str
     glow2: str
+    logo_plate: str
+    logo_pad: str
 
 
 # Keep these in sync with .streamlit/config.toml (the locked light theme).
@@ -67,6 +71,8 @@ LIGHT = ThemeColors(
     input_text="#14241c",
     glow="rgba(15, 110, 78, 0.10)",
     glow2="rgba(30, 77, 107, 0.07)",
+    logo_plate="transparent",
+    logo_pad="0",
 )
 
 DARK = ThemeColors(
@@ -92,6 +98,8 @@ DARK = ThemeColors(
     input_text="#14241c",
     glow="rgba(62, 207, 142, 0.14)",
     glow2="rgba(30, 77, 107, 0.20)",
+    logo_plate="#f4f7f4",
+    logo_pad="0.35rem 0.55rem 0.3rem",
 )
 
 
@@ -278,6 +286,36 @@ div.stButton > button[kind="primary"],
   color: @@text@@ !important;
   background: @@code_bg@@ !important;
 }
+.bw-header {
+  padding: 0.1rem 0 0.85rem 0;
+  margin: 0 0 0.85rem 0;
+  border-bottom: 1px solid @@line@@;
+  text-align: center;
+}
+.bw-brand-lockup {
+  display: inline-block;
+  background: @@logo_plate@@;
+  border-radius: 12px;
+  line-height: 0;
+  padding: @@logo_pad@@;
+}
+.bw-logo-header {
+  display: block;
+  width: min(100%, 420px);
+  height: auto;
+}
+.bw-footer {
+  margin-top: 2.5rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid @@line@@;
+  display: flex;
+  justify-content: center;
+}
+.bw-logo-footer {
+  display: block;
+  width: min(46vw, 168px);
+  height: auto;
+}
 .bw-hero {
   padding: 0.35rem 0 1rem 0;
   border-bottom: 1px solid @@line@@;
@@ -379,11 +417,67 @@ def _stylesheet(colors: ThemeColors) -> str:
     return css
 
 
+_ROOT = Path(__file__).resolve().parents[1]
+LOGO_PATH = _ROOT / "assets" / "gustypower-logo.png"
+ICON_PATH = _ROOT / "assets" / "gustypower-icon.png"
+
+
+def _png_data_uri(path: Path) -> str:
+    payload = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{payload}"
+
+
+_LOGO_URI = _png_data_uri(LOGO_PATH)
+
+
+def header_html() -> str:
+    """Logo lockup for the top of every page. The image already includes the wordmark."""
+    return (
+        '<div class="bw-header">'
+        '<span class="bw-brand-lockup">'
+        f'<img class="bw-logo-header" alt="GustyPower" src="{_LOGO_URI}" />'
+        "</span></div>"
+    )
+
+
+def footer_html() -> str:
+    """Smaller copy of the same logo for the bottom of every page."""
+    return (
+        '<div class="bw-footer">'
+        '<span class="bw-brand-lockup">'
+        f'<img class="bw-logo-footer" alt="GustyPower" src="{_LOGO_URI}" />'
+        "</span></div>"
+    )
+
+
+def configure_page(title: str) -> None:
+    """Browser tab title and icon. Call before any other Streamlit command."""
+    import streamlit as st
+
+    st.set_page_config(
+        page_title=title,
+        page_icon=str(ICON_PATH),
+        layout="centered",
+        initial_sidebar_state="collapsed",
+    )
+
+
 def apply_theme(dark: bool | None = None) -> None:
-    """Inject the shared stylesheet. Call once at the top of every page."""
+    """Inject the shared stylesheet and the header logo.
+
+    Call once at the top of every page. Pair with ``render_footer()`` so the
+    small mark is the last thing on the page, including after an early return.
+    """
     import streamlit as st
 
     if dark is None:
         dark = bool(st.session_state.get("bw_dark", False))
     # st.html keeps <style>; markdown would strip tags and leak CSS as text.
-    st.html(_stylesheet(DARK if dark else LIGHT))
+    st.html(_stylesheet(DARK if dark else LIGHT) + header_html())
+
+
+def render_footer() -> None:
+    """Small GustyPower mark at the bottom of the page."""
+    import streamlit as st
+
+    st.html(footer_html())

@@ -72,7 +72,7 @@ from bike_wind.rider import (
     surface_key_for_label,
     surface_labels,
 )
-from bike_wind.theme import apply_theme, chart_palette
+from bike_wind.theme import apply_theme, chart_palette, configure_page, render_footer
 from bike_wind.user_config import clothing_key_from_config, save_rider_config
 try:
     from bike_wind.settings import strava_secrets_presence
@@ -111,11 +111,7 @@ from bike_wind.weather import hrrr_enabled_by_env
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sample_route.gpx"
 
-st.set_page_config(
-    page_title="Bike Wind",
-    layout="centered",
-    initial_sidebar_state="collapsed",
-)
+configure_page("GustyPower")
 
 
 
@@ -1549,20 +1545,24 @@ def _sync_whatif_slider_defaults(result) -> None:
 
 
 def main() -> None:
+    """Header logo, the page, then the small footer mark."""
     _init_state()
+    apply_theme()
+    try:
+        _render_home()
+    finally:
+        render_footer()
 
+
+def _render_home() -> None:
     top_l, top_r = st.columns([4, 1])
     with top_r:
         dark = st.toggle("Dark", key="bw_dark", help="Dark / light")
-    apply_theme(dark)
 
     with top_l:
         st.html(
             """
-            <div class="bw-hero">
-              <p class="bw-brand">Bike Wind</p>
-              <p class="bw-tagline">Predicting how you will do on a route or segment</p>
-            </div>
+            <p class="bw-tagline">Predicting how you will do on a route or segment</p>
             """
         )
         link_map, link_exp = st.columns(2)
