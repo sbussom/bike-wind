@@ -84,7 +84,7 @@ def save_rider_config(updates: dict[str, Any], path: Path | None = None) -> Path
     existing = load_rider_config(path)
     existing.update({k: v for k, v in updates.items() if v is not None})
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["# Bike Wind rider / model settings (not secrets).", "[rider]"]
+    lines = ["# GustyPower rider / model settings (not secrets).", "[rider]"]
     for key in sorted(existing):
         val = existing[key]
         if isinstance(val, bool):

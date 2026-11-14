@@ -42,7 +42,7 @@ from bike_wind.wind_field import (
     sample_point,
     subset_payload,
 )
-from bike_wind.theme import apply_theme
+from bike_wind.theme import apply_theme, configure_page, render_footer
 from bike_wind.wind_map_html import build_wind_map_html
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,11 +50,7 @@ SEGMENT_FIXTURE = ROOT / "fixtures" / "segment_41392335.json"
 TZ = ZoneInfo("America/New_York")
 MAP_HEIGHT_PX = 520
 
-st.set_page_config(
-    page_title="GustyPower wind map",
-    layout="centered",
-    initial_sidebar_state="collapsed",
-)
+configure_page("GustyPower wind map")
 
 
 @st.cache_data(ttl=3 * 3600, show_spinner=False)
@@ -141,12 +137,16 @@ def when_label(t: datetime) -> str:
 
 def main() -> None:
     apply_theme()
+    try:
+        _render_wind_map()
+    finally:
+        render_footer()
+
+
+def _render_wind_map() -> None:
     st.html(
         """
-        <div class="bw-hero bw-hero-compact">
-          <p class="bw-brand">Gusty<span class="bw-accent-word">Power</span> wind map</p>
-          <p class="bw-tagline">Forecast wind around your rides. Press play or drag the slider.</p>
-        </div>
+        <p class="bw-tagline">Forecast wind around your rides. Press play or drag the slider.</p>
         """
     )
 

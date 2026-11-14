@@ -51,14 +51,10 @@ from bike_wind.rider import (
 )
 from bike_wind.strava import StravaAuthError, StravaClient, StravaError, load_strava_config
 from bike_wind.strava.oauth import scope_has_activity_read
-from bike_wind.theme import apply_theme, theme_is_dark
+from bike_wind.theme import apply_theme, configure_page, render_footer, theme_is_dark
 from bike_wind.weather import hrrr_enabled_by_env
 
-st.set_page_config(
-    page_title="GustyPower experimental",
-    layout="centered",
-    initial_sidebar_state="collapsed",
-)
+configure_page("GustyPower experimental")
 
 ROOT = Path(__file__).resolve().parents[1]
 PUMPHOUSE = ROOT / "fixtures" / "segment_41392335.json"
@@ -369,6 +365,13 @@ def _render_results(payload: dict) -> None:
 def main() -> None:
     _init_widgets()
     apply_theme()
+    try:
+        _render_experimental()
+    finally:
+        render_footer()
+
+
+def _render_experimental() -> None:
     st.title("Experimental")
     st.warning(
         "These setups are experimental and are not part of the validated production model. "

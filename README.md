@@ -1,4 +1,4 @@
-# Bike wind speed predictions
+# GustyPower
 
 Predict ground speed on a road segment under forecast wind.
 
