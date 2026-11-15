@@ -19,6 +19,10 @@ The manual Cd·A multiplier and Crr are an unvalidated bike-setup override
 Per-section road/gravel is a third option. Road keeps production Cd·A and
 Crr 0.0052. Gravel uses Crr 0.010 and the same Cd·A. It does not change the
 OSM surface-aware column.
+
+Pack / race group is a fourth option, default off. It scales Cd·A for a
+mid-pack seat in a group of 5–10 and turns off the low-power Cd·A increase.
+The prediction page does not call it.
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from bike_wind.analysis import eta_seconds
+from bike_wind.analysis import eta_seconds, format_duration
 from bike_wind.calibration.cda_defaults import (
     SURFACE_OFFMAP_CDA_SCALE,
     SURFACE_OFFMAP_CRR,
@@ -35,17 +39,20 @@ from bike_wind.calibration.cda_defaults import (
     SURFACE_UNPAVED_CDA_SCALE,
     SURFACE_UNPAVED_CRR,
 )
+from bike_wind.calibration.metrics import SegmentTimeScore, score_segment_time
 from bike_wind.clothing import DEFAULT_CLOTHING_KEY, resolve_clothing
 from bike_wind.physics.constants import CRR_PACKED_SAND, DRIVETRAIN_EFFICIENCY
 from bike_wind.physics.forces import RiderBikeParams, WindComponents
 from bike_wind.physics.solver import solve_speeds
 from bike_wind.predict import PredictionResult
+from bike_wind.ride_filter import accuracy_skip_reason
 from bike_wind.rider import (
     DEFAULT_POSITION_KEY,
     DEFAULT_SURFACE_KEY,
     resolve_aero,
     resolve_surface,
 )
+from bike_wind.strava.models import ActivitySummary, SegmentEffortSummary
 from bike_wind.surface.osm_surface import (
     OFF_MAP,
     PAVED,
@@ -68,6 +75,33 @@ CDA_MULTIPLIER_DEFAULT = 1.0
 CDA_MULTIPLIER_MIN = 0.85
 CDA_MULTIPLIER_MAX = 1.10
 PRODUCTION_CRR = CRR_PACKED_SAND
+
+# Mid-pack of a 5–10 rider group, not the belly of a large peloton.
+# Blocken, Toparlar, van Druenen, and Andrianne, J. Wind Eng. Ind. Aerodyn.
+# 182 (2018) 128–145, https://doi.org/10.1016/j.jweia.2018.09.015: in a
+# single paceline the second rider's drag is about 60–70% of an isolated
+# rider (a 30–40% reduction) across wheel gaps of 0.05–1 m, and the third
+# rider is about 50–63%. Riders from about 5th place in a tight 6–9 rider
+# time-trial line sit lower still, and Blocken et al., J. Wind Eng. Ind.
+# Aerodyn. 179 (2018) 319–337, found 90–95% reductions in the belly of a
+# 121-rider peloton. A gravel bunch of 5–10 is not that formation, so this
+# uses the 30% end of the second-rider range (Cd·A × 0.70).
+PACK_GROUP_CDA_SCALE = 0.70
+PACK_COLUMN_LABEL = "Pack"
+
+_PACK_SKIP = {
+    "virtual": "Virtual or Zwift rides are not counted.",
+    "trainer": "Trainer rides are not counted.",
+    "ebike": "E-bike rides are not counted.",
+    "no_gps": "Rides without a GPS track are not counted.",
+    "not_a_ride": "This activity is not a bike ride, so it is not counted.",
+    "estimated_power": (
+        "Estimated power is not counted. Only a power meter (Strava device_watts) is."
+    ),
+    "no_power_meter": (
+        "No power meter on this ride (Strava device_watts). It is not counted."
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -162,6 +196,107 @@ def apply_manual_setup(
 def apply_surface_setup(params: RiderBikeParams) -> RiderBikeParams:
     """Ask the solver to use per-point OSM Crr and Cd·A scale."""
     return params.with_updates(surface_aware=True)
+
+
+def apply_pack_setup(params: RiderBikeParams) -> RiderBikeParams:
+    """Drafting Cd·A for a mid-pack seat in a group of 5–10.
+
+    Scales area by ``PACK_GROUP_CDA_SCALE`` and turns ``power_cda`` off.
+    Soft-pedaling in a group does not raise drag. Production parameters
+    are not modified.
+    """
+    return params.with_updates(
+        area_m2=float(params.area_m2) * PACK_GROUP_CDA_SCALE,
+        power_cda=False,
+    )
+
+
+@dataclass(frozen=True)
+class PackEffortVerdict:
+    """Predicted segment time with the pack toggle off and on, vs actual.
+
+    ``skip_reason`` is set when the ride must not be scored. ``off`` and
+    ``on`` are then None.
+    """
+
+    name: str
+    actual_s: float | None
+    off: SegmentTimeScore | None
+    on: SegmentTimeScore | None
+    skip_reason: str | None
+
+
+def pack_skip_sentence(reason: str) -> str:
+    """One sentence for why a ride is left out of the pack comparison."""
+    return _PACK_SKIP.get(reason, "This ride is not counted.")
+
+
+def pack_effort_verdict(
+    *,
+    predicted_off_s: float,
+    predicted_on_s: float,
+    actual_s: float,
+    activity: ActivitySummary | None,
+    effort: SegmentEffortSummary | None,
+    name: str,
+) -> PackEffortVerdict:
+    """Score the pack toggle off and on against one segment effort.
+
+    Virtual, Zwift, trainer, and non-meter rides return a skip reason and
+    no scores. Same gate as forecast and post-ride accuracy
+    (``accuracy_skip_reason`` / Strava ``device_watts``).
+    """
+    reason = accuracy_skip_reason(activity, effort)
+    if reason is not None:
+        return PackEffortVerdict(
+            name=name,
+            actual_s=None,
+            off=None,
+            on=None,
+            skip_reason=reason,
+        )
+    return PackEffortVerdict(
+        name=name,
+        actual_s=float(actual_s),
+        off=score_segment_time(predicted_off_s, actual_s),
+        on=score_segment_time(predicted_on_s, actual_s),
+        skip_reason=None,
+    )
+
+
+def _signed_clock(seconds: float) -> str:
+    if not math.isfinite(seconds):
+        return "—"
+    sign = "+" if seconds >= 0 else "−"
+    mag = abs(seconds)
+    if mag < 0.5:
+        return "+0:00"
+    return f"{sign}{format_duration(mag)}"
+
+
+def format_pack_score(score: SegmentTimeScore) -> str:
+    """Predicted, actual, and signed error for one toggle state."""
+    return (
+        f"{format_duration(score.predicted_s)} predicted · "
+        f"actual {format_duration(score.actual_s)} · "
+        f"{_signed_clock(score.error_s)} ({score.error_pct:+.1f}%)"
+    )
+
+
+def pack_vs_actual_lines(verdict: PackEffortVerdict) -> list[str]:
+    """Caption lines for the Experimental page. Empty when unscoresable."""
+    if verdict.skip_reason:
+        return [
+            f"{verdict.name}: {pack_skip_sentence(verdict.skip_reason)} "
+            "Predicted vs actual is not shown."
+        ]
+    if verdict.off is None or verdict.on is None:
+        return []
+    return [
+        f"{verdict.name}",
+        f"Pack off: {format_pack_score(verdict.off)}",
+        f"Pack on: {format_pack_score(verdict.on)}",
+    ]
 
 
 def distance_shares(
@@ -616,6 +751,7 @@ def compare_with_production(
     manual_crr: float | None = None,
     section_crr: list[float] | None = None,
     section_note: str = "",
+    pack: bool = False,
 ) -> list[SetupPrediction]:
     """Production column, then each experimental column that was requested.
 
@@ -623,6 +759,8 @@ def compare_with_production(
     report still adds a column, marked as a fallback to production.
     ``manual_cda_multiplier`` / ``manual_crr`` together add the manual column.
     ``section_crr`` adds the per-section road/gravel column.
+    ``pack`` adds the 5–10 rider drafting column. It does not change the
+    production column.
     """
     prod_eta = result.eta_with_wind_s
     prod_mph = average_speed_mph(result.distances_m, prod_eta)
@@ -686,6 +824,24 @@ def compare_with_production(
                 or (
                     f"Unvalidated per-section rolling. Road Crr {ROAD_SECTION_CRR:.4f} "
                     f"and production Cd·A. Gravel Crr {GRAVEL_SECTION_CRR:.3f}."
+                ),
+            )
+        )
+    if pack:
+        params = apply_pack_setup(result.params)
+        _speeds, eta = resimulate(result, params)
+        columns.append(
+            _column(
+                result,
+                label=PACK_COLUMN_LABEL,
+                eta_s=eta,
+                production_eta=prod_eta,
+                production_mph=prod_mph,
+                note=(
+                    f"Unvalidated. Mid-pack of a 5–10 rider group: "
+                    f"Cd·A ×{PACK_GROUP_CDA_SCALE:.2f} "
+                    "(30% less than riding alone). "
+                    "The low-power Cd·A increase is off."
                 ),
             )
         )

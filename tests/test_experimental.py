@@ -15,10 +15,13 @@ from bike_wind.experimental import (
     AERO_WHEELS_CRR,
     AERO_WHEELS_PRESET_NAME,
     GRAVEL_SECTION_CRR,
+    PACK_COLUMN_LABEL,
+    PACK_GROUP_CDA_SCALE,
     PRODUCTION_CRR,
     ROAD_SECTION_CRR,
     SurfaceReport,
     apply_manual_setup,
+    apply_pack_setup,
     average_speed_mph,
     build_production_params,
     build_sections,
@@ -26,13 +29,16 @@ from bike_wind.experimental import (
     crr_for_sections,
     distance_shares,
     lookup_surface,
+    pack_effort_verdict,
+    pack_vs_actual_lines,
     resimulate,
     sections_for_route,
 )
 from bike_wind.gpx.parse import RouteStreams
-from bike_wind.physics.forces import WindComponents
+from bike_wind.physics.forces import WindComponents, aero_force
 from bike_wind.physics.solver import solve_speeds
 from bike_wind.predict import PredictionResult, downsample_route, predict_speeds
+from bike_wind.strava.models import ActivitySummary, SegmentEffortSummary
 from bike_wind.surface.osm_surface import OFF_MAP, PAVED, UNPAVED, route_surface_classes
 from bike_wind.weather.open_meteo import WeatherFetchError
 
@@ -467,3 +473,157 @@ def test_pumphouse_sections_default_road_and_gravel_is_slower(monkeypatch):
     )
     assert road[-1].eta_s == pytest.approx(road[0].eta_s, abs=0.05)
     assert gravel[-1].eta_s > road[-1].eta_s + 10.0
+
+
+def _ride(**overrides) -> ActivitySummary:
+    fields = dict(
+        activity_id=1,
+        name="Gravel race",
+        sport_type="Ride",
+        start_date="2026-02-01T15:00:00Z",
+        distance_m=6800.0,
+        moving_time_s=900,
+        elapsed_time_s=940,
+        average_watts=210.0,
+        trainer=False,
+        has_gps=True,
+        device_watts=True,
+    )
+    fields.update(overrides)
+    return ActivitySummary(**fields)
+
+
+def _effort(**overrides) -> SegmentEffortSummary:
+    fields = dict(
+        effort_id=9,
+        segment_id=229781,
+        name="Markham Levee - Ramp to 4 miles up",
+        distance_m=6800.0,
+        elapsed_time_s=900,
+        moving_time_s=890,
+        start_date="2026-02-01T15:10:00Z",
+        average_watts=200.0,
+        device_watts=True,
+    )
+    fields.update(overrides)
+    return SegmentEffortSummary(**fields)
+
+
+def test_pack_draft_cuts_cda_and_skips_the_low_power_bump():
+    """30% less Cd·A, and coasting does not take the solo low-power Cd·A."""
+    params = build_production_params(rider_kg=69.0, power_w=220.0)
+    assert params.power_cda is True
+    pack = apply_pack_setup(params)
+    assert pack.power_cda is False
+    assert pack.area_m2 == pytest.approx(params.area_m2 * PACK_GROUP_CDA_SCALE)
+    assert PACK_GROUP_CDA_SCALE == pytest.approx(0.70)
+    assert pack.crr == params.crr
+    # The original params are the production model.
+    assert params.power_cda is True
+    assert params.area_m2 != pack.area_m2
+
+    solo_coast = params.with_updates(power_w=0.0)
+    bare = params.with_updates(power_w=0.0, power_cda=False)
+    pack_coast = pack.with_updates(power_w=0.0)
+    f_solo = aero_force(9.0, solo_coast)
+    f_bare = aero_force(9.0, bare)
+    f_pack = aero_force(9.0, pack_coast)
+    assert f_solo > f_bare
+    assert f_pack == pytest.approx(f_bare * PACK_GROUP_CDA_SCALE)
+    assert f_pack < f_bare
+
+    n = 16
+    dist = [25.0 * i for i in range(n)]
+    grades = [0.0] * n
+    winds = [WindComponents()] * n
+    # Eight powered samples, then a short coast. A long 0 W stretch stops
+    # both bikes, which would hide the drafting difference.
+    powers = [180.0] * 8 + [0.0] * (n - 8)
+    solo = solve_speeds(
+        params, grades, winds, powers_w=powers, distances_m=dist, initial_speed_mps=9.0
+    )
+    drafted = solve_speeds(
+        pack, grades, winds, powers_w=powers, distances_m=dist, initial_speed_mps=9.0
+    )
+    assert solo[-1] > 1.0
+    assert drafted[-1] > solo[-1]
+
+
+def test_pack_column_is_optional_and_only_meter_efforts_are_scored():
+    params = build_production_params(rider_kg=69.0, power_w=220.0)
+    result = _flat_result(params)
+    off = compare_with_production(result)
+    on = compare_with_production(result, pack=True)
+    assert [col.label for col in off] == ["Production"]
+    assert [col.label for col in on] == ["Production", PACK_COLUMN_LABEL]
+    assert on[0].eta_s == pytest.approx(off[0].eta_s)
+    assert on[1].eta_s < on[0].eta_s
+    assert result.params.power_cda is True
+    assert result.params.area_m2 == pytest.approx(params.area_m2)
+
+    counted = pack_effort_verdict(
+        predicted_off_s=on[0].eta_s,
+        predicted_on_s=on[1].eta_s,
+        actual_s=900.0,
+        activity=_ride(),
+        effort=_effort(),
+        name="Markham Levee - Ramp to 4 miles up",
+    )
+    assert counted.skip_reason is None
+    assert counted.off is not None and counted.on is not None
+    lines = pack_vs_actual_lines(counted)
+    assert lines[0] == "Markham Levee - Ramp to 4 miles up"
+    assert lines[1].startswith("Pack off:")
+    assert lines[2].startswith("Pack on:")
+    assert "actual" in lines[1] and "actual" in lines[2]
+
+    virtual = pack_effort_verdict(
+        predicted_off_s=800.0,
+        predicted_on_s=700.0,
+        actual_s=900.0,
+        activity=_ride(sport_type="VirtualRide", name="Zwift race", has_gps=False),
+        effort=_effort(),
+        name="Zwift race",
+    )
+    assert virtual.skip_reason == "virtual"
+    assert virtual.off is None and virtual.on is None
+    assert "not shown" in pack_vs_actual_lines(virtual)[0]
+
+    trainer = pack_effort_verdict(
+        predicted_off_s=800.0,
+        predicted_on_s=700.0,
+        actual_s=900.0,
+        activity=_ride(trainer=True, name="Trainer"),
+        effort=_effort(),
+        name="Trainer",
+    )
+    assert trainer.skip_reason == "trainer"
+    assert trainer.off is None
+
+    estimated = pack_effort_verdict(
+        predicted_off_s=800.0,
+        predicted_on_s=700.0,
+        actual_s=900.0,
+        activity=_ride(device_watts=False),
+        effort=_effort(device_watts=False),
+        name="Estimated",
+    )
+    assert estimated.skip_reason == "estimated_power"
+    assert estimated.off is None
+
+
+def test_pack_toggle_defaults_off_and_the_main_page_does_not_use_it():
+    root = Path(__file__).resolve().parents[1]
+    page = (root / "pages" / "2_Experimental.py").read_text()
+    app = (root / "app.py").read_text()
+    assert "Pack / race group (5-10 riders)" in page
+    assert "exp_pack_on = False" in page
+    assert "apply_pack_setup" not in app
+    assert "PACK_GROUP" not in app
+    assert "exp_pack_on" not in app
+    predict_src = inspect.getsource(predict_speeds)
+    solver_src = inspect.getsource(solve_speeds)
+    assert "apply_pack_setup" not in predict_src
+    assert "PACK_GROUP" not in predict_src
+    assert "apply_pack_setup" not in solver_src
+    assert "PACK_GROUP" not in solver_src
