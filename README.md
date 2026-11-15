@@ -41,6 +41,22 @@ recorded time, that actual elapsed time is shown too.
 * **Manual bike setup** is an unvalidated Cd·A multiplier (0.85–1.10, default
   1.00) and Crr (default the production 0.0052). The preset **Aero wheels +
   road tires (unvalidated guess)** sets Cd·A ×0.95 and Crr 0.0045.
+* **Pack / race group (5-10 riders)** is off unless you turn it on. It is not
+  part of the validated model, and the prediction page does not use it. On,
+  Cd·A is ×0.70 (30% less drag than riding alone) and the low-power Cd·A
+  increase stays off, so soft-pedaling in a group does not add drag. The 30%
+  figure is the low end of the second-rider saving in Blocken, Toparlar, van
+  Druenen, and Andrianne, *Journal of Wind Engineering and Industrial
+  Aerodynamics* 182 (2018) 128–145
+  (https://doi.org/10.1016/j.jweia.2018.09.015): in a paceline the second
+  rider keeps about 60–70% of an isolated rider's drag. A gravel group of
+  5–10 is not a tight time-trial line and not the belly of a large peloton
+  (where the same authors found much larger savings), so the deeper cuts are
+  not used. When the prediction page has a segment effort loaded and you
+  choose **Route loaded on the prediction page**, the result shows predicted
+  vs actual segment time with the toggle off and on. Only an outdoor
+  power-meter effort counts (Strava `device_watts`). Virtual, Zwift, trainer,
+  and estimated-power rides are left out.
 * **By section** appears after Compare. The route is split into rows (one
   OpenStreetMap way when the road is mapped; otherwise a turn or about 2 km).
   Each row has a Road / Gravel control. Road is Crr 0.0052 and the production

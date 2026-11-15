@@ -13,6 +13,7 @@
 # 2026-11-12: bumped to 0.6.35 to force a Cloud reinstall after forecast logging.
 # 2026-11-13: bumped to 0.6.36 to force a Cloud reinstall after past/future modes.
 # 2026-11-13: bumped to 0.6.37 to force a Cloud reinstall after collapsed mode panels.
+# 2026-11-15: bumped to 0.6.38 to force a Cloud reinstall after the pack-drafting toggle.
 -e .
 numpy>=1.26
 requests>=2.31

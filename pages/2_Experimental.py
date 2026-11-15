@@ -1,8 +1,8 @@
 """Experimental setups next to the validated GustyPower prediction.
 
 The prediction page is unchanged. This page re-solves the same route, weather,
-and power with optional surface-aware rolling and an unvalidated Cd·A / Crr
-override, and shows the difference.
+and power with optional surface-aware rolling, an unvalidated Cd·A / Crr
+override, and an optional pack-drafting Cd·A, and shows the difference.
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ from bike_wind.experimental import (
     CDA_MULTIPLIER_MIN,
     GRAVEL_SECTION_CRR,
     OSM_TIMEOUT_S,
+    PACK_COLUMN_LABEL,
+    PACK_GROUP_CDA_SCALE,
     PRODUCTION_CRR,
     ROAD_SECTION_CRR,
     average_speed_mph,
@@ -32,6 +34,8 @@ from bike_wind.experimental import (
     compare_with_production,
     crr_for_sections,
     format_surface_shares,
+    pack_effort_verdict,
+    pack_vs_actual_lines,
     sections_for_route,
     surface_rule_blurb,
 )
@@ -50,6 +54,7 @@ from bike_wind.rider import (
     standing_height_to_wind_z_m,
 )
 from bike_wind.strava import StravaAuthError, StravaClient, StravaError, load_strava_config
+from bike_wind.strava.models import ActivitySummary, SegmentEffortSummary
 from bike_wind.strava.oauth import scope_has_activity_read
 from bike_wind.theme import apply_theme, configure_page, render_footer, theme_is_dark
 from bike_wind.weather import hrrr_enabled_by_env
@@ -83,6 +88,8 @@ def _init_widgets() -> None:
         st.session_state.exp_surface_on = False
     if "exp_manual_on" not in st.session_state:
         st.session_state.exp_manual_on = False
+    if "exp_pack_on" not in st.session_state:
+        st.session_state.exp_pack_on = False
 
 
 def _on_preset() -> None:
@@ -196,6 +203,23 @@ def _resolve_route(choice: str, segment_text: str, upload) -> tuple[str, RouteSt
     route = parse_gpx(upload.getvalue())
     return upload.name or "GPX", route, None
     raise RuntimeError(f"Unknown route choice: {choice}")
+
+
+def _pack_past_effort() -> dict | None:
+    """Segment effort currently loaded on the prediction page, if any."""
+    if st.session_state.get("route_source") != "effort":
+        return None
+    effort = st.session_state.get("selected_effort")
+    if not isinstance(effort, SegmentEffortSummary):
+        return None
+    activity = st.session_state.get("selected_activity")
+    act = activity if isinstance(activity, ActivitySummary) else None
+    return {
+        "name": effort.name or "Segment effort",
+        "actual_s": float(effort.elapsed_time_s or effort.moving_time_s),
+        "activity": act,
+        "effort": effort,
+    }
 
 
 def _latest_effort_line(segment_id: int | None) -> str | None:
@@ -357,6 +381,15 @@ def _render_results(payload: dict) -> None:
     for col in columns:
         if col.note:
             st.caption(f"{col.label}: {col.note}")
+    for line in payload.get("pack_lines") or []:
+        st.caption(line)
+    if payload.get("pack_needs_effort"):
+        st.caption(
+            "Predicted vs actual for pack on and off needs a segment effort "
+            "loaded on the prediction page, then Route loaded on the prediction page here. "
+            "Only an outdoor power-meter effort counts (Strava device_watts). "
+            "Virtual, Zwift, trainer, and estimated-power rides are left out."
+        )
     st.caption(payload.get("detail") or "")
     if payload.get("effort_line") and not actual_s:
         st.caption(payload["effort_line"])
@@ -486,6 +519,23 @@ def _render_experimental() -> None:
                 "Unvalidated. The preset only fills these two inputs; "
                 "the numbers above are what the comparison uses."
             )
+        pack_on = st.checkbox(
+            "Pack / race group (5-10 riders)",
+            key="exp_pack_on",
+            help=(
+                "Unvalidated. Mid-pack drafting for a group of 5–10: "
+                f"Cd·A ×{PACK_GROUP_CDA_SCALE:.2f}, and the low-power Cd·A increase stays off. "
+                "Default off. The prediction page is unchanged."
+            ),
+        )
+        if pack_on:
+            st.caption(
+                f"Unvalidated. Cd·A ×{PACK_GROUP_CDA_SCALE:.2f} "
+                "(about 30% less drag than riding alone; Blocken et al. 2018, "
+                "team time-trial pacelines). Soft-pedaling does not raise Cd·A. "
+                "With a power-meter segment effort from the prediction page, "
+                "the result shows predicted vs actual with this off and on."
+            )
 
     compare = st.button("Compare", type="primary", use_container_width=True)
     fetch_fp = _fetch_fingerprint(choice, segment_text, upload, power_w, rider_kg, when)
@@ -532,6 +582,7 @@ def _render_experimental() -> None:
                     timeout_s=OSM_TIMEOUT_S,
                 )
             effort_line = None if result.actual_elapsed_s else _latest_effort_line(segment_id)
+            past_effort = _pack_past_effort() if choice == ROUTE_MAIN else None
             st.session_state.exp_solved = {
                 "fp": fetch_fp,
                 "result": result,
@@ -539,6 +590,7 @@ def _render_experimental() -> None:
                 "sections": sections,
                 "surface_report": surface_report,
                 "effort_line": effort_line,
+                "past_effort": past_effort,
             }
         except (StravaAuthError, StravaError) as exc:
             st.error(str(exc))
@@ -594,6 +646,7 @@ def _render_experimental() -> None:
             )
     manual_cda = float(st.session_state.exp_cda_mult) if manual_on else None
     manual_crr = float(st.session_state.exp_crr) if manual_on else None
+    pack_on = bool(st.session_state.get("exp_pack_on"))
     columns = compare_with_production(
         result,
         surface_report=surface_report,
@@ -601,7 +654,27 @@ def _render_experimental() -> None:
         manual_crr=manual_crr,
         section_crr=section_crr,
         section_note=section_note,
+        pack=pack_on,
     )
+    pack_lines: list[str] = []
+    pack_needs_effort = False
+    if pack_on:
+        past = solved.get("past_effort")
+        pack_col = next((col for col in columns if col.label == PACK_COLUMN_LABEL), None)
+        if past and pack_col is not None:
+            verdict = pack_effort_verdict(
+                predicted_off_s=columns[0].eta_s,
+                predicted_on_s=pack_col.eta_s,
+                actual_s=float(past["actual_s"]),
+                activity=past.get("activity"),
+                effort=past.get("effort"),
+                name=str(past.get("name") or "Segment effort"),
+            )
+            pack_lines = pack_vs_actual_lines(verdict)
+            if not pack_lines:
+                pack_lines = [f"{verdict.name}: no usable actual time to compare."]
+        else:
+            pack_needs_effort = True
     actual_s = result.actual_elapsed_s
     power_note = (
         "Every column uses the recorded power trace, same as the prediction page."
@@ -634,6 +707,8 @@ def _render_experimental() -> None:
         "detail": detail,
         "effort_line": solved.get("effort_line"),
         "clock_summary": ride.summary() if ride and ride.stops else None,
+        "pack_lines": pack_lines,
+        "pack_needs_effort": pack_needs_effort,
     }
     st.session_state.exp_last = payload
     _render_results(payload)
