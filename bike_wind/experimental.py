@@ -1,8 +1,9 @@
 """Experimental setups compared with the validated production prediction.
 
-The prediction page never imports this module. Production parameters are built
-the same way as ``app.py`` (no ``surface_aware``), then optional experiments
-are re-solved on the weather that prediction already fetched.
+Production parameters are built the same way as ``app.py`` (no
+``surface_aware``), then optional experiments are re-solved on the weather
+that prediction already fetched. The prediction page calls ``solve_pack_eta``
+only when its pack toggle is on.
 
 Surface-aware rolling uses OpenStreetMap per point:
 
@@ -20,15 +21,16 @@ Per-section road/gravel is a third option. Road keeps production Cd·A and
 Crr 0.0052. Gravel uses Crr 0.010 and the same Cd·A. It does not change the
 OSM surface-aware column.
 
-Pack / race group is a fourth option, default off. It scales Cd·A for a
-mid-pack seat in a group of 5–10 and turns off the low-power Cd·A increase.
-The prediction page does not call it.
+Pack / race group scales Cd·A for a mid-pack seat in a group of 5–10 and
+turns off the low-power Cd·A increase. The control for that lives on the
+prediction page. This module still has the setup so both pages share one
+figure.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from bike_wind.analysis import eta_seconds, format_duration
 from bike_wind.calibration.cda_defaults import (
@@ -44,7 +46,7 @@ from bike_wind.clothing import DEFAULT_CLOTHING_KEY, resolve_clothing
 from bike_wind.physics.constants import CRR_PACKED_SAND, DRIVETRAIN_EFFICIENCY
 from bike_wind.physics.forces import RiderBikeParams, WindComponents
 from bike_wind.physics.solver import solve_speeds
-from bike_wind.predict import PredictionResult
+from bike_wind.predict import PredictionResult, apply_what_if
 from bike_wind.ride_filter import accuracy_skip_reason
 from bike_wind.rider import (
     DEFAULT_POSITION_KEY,
@@ -209,6 +211,30 @@ def apply_pack_setup(params: RiderBikeParams) -> RiderBikeParams:
         area_m2=float(params.area_m2) * PACK_GROUP_CDA_SCALE,
         power_cda=False,
     )
+
+
+def solve_pack_eta(
+    result: PredictionResult,
+    *,
+    power_w: float,
+    wind_speed_mps: float,
+    grade_scale: float = 1.0,
+    use_recorded_power: bool = False,
+) -> float:
+    """What-if ETA with pack drafting. Does not change ``result``.
+
+    Uses the same power, wind scale, and grade scale as the prediction page's
+    ``apply_what_if``. The caller keeps its own production ETA for pack-off.
+    """
+    packed = replace(result, params=apply_pack_setup(result.params))
+    solved = apply_what_if(
+        packed,
+        power_w=float(power_w),
+        wind_speed_mps=float(wind_speed_mps),
+        grade_scale=float(grade_scale),
+        use_recorded_power=bool(use_recorded_power),
+    )
+    return float(solved.eta_with_wind_s)
 
 
 @dataclass(frozen=True)

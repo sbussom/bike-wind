@@ -12,6 +12,7 @@ from bike_wind.strava.oauth import (
     OAuthTokenError,
     READ_SCOPE,
     build_authorize_url,
+    same_tab_connect_html,
     exchange_code,
     refresh_access_token,
     safe_oauth_error_detail,
@@ -94,6 +95,19 @@ def test_safe_oauth_error_redacts_tokenish() -> None:
     assert "invalid_client" in detail
     assert "abcdefghijklmnopqrstuvwxyz012345" not in detail
     assert "[redacted]" in detail
+
+
+def test_connect_link_stays_in_this_tab() -> None:
+    url = build_authorize_url("12345", DEFAULT_REDIRECT_URI)
+    html = same_tab_connect_html(url)
+    assert 'target="_top"' in html
+    assert "Connect with Strava" in html
+    assert "www.strava.com/oauth/authorize" in html
+    assert 'target="_blank"' not in html
+    root = __import__("pathlib").Path(__file__).resolve().parents[1]
+    app = (root / "app.py").read_text()
+    assert "st.link_button" not in app
+    assert "same_tab_connect_html" in app
 
 
 def test_authorize_url_includes_activity_read_scope() -> None:

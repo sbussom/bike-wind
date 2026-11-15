@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -42,6 +43,34 @@ class OAuthTokenError(RuntimeError):
 
 def oauth_configured(client_id: str | None, client_secret: str | None, redirect_uri: str | None) -> bool:
     return bool(client_id and client_secret and redirect_uri)
+
+
+def same_tab_connect_html(
+    url: str,
+    *,
+    label: str = "Connect with Strava",
+    background: str = "#0f6e4e",
+    color: str = "#ffffff",
+) -> str:
+    """Authorize link that stays in this browser tab.
+
+    ``st.link_button`` always opens a new tab, which starts a second Streamlit
+    session. ``target="_top"`` navigates the top window, including when the
+    control sits in a frame. Strava then redirects back to this app in that
+    same tab, and the OAuth callback stores the token on the new run.
+    """
+    href = html.escape(url, quote=True)
+    text = html.escape(label)
+    bg = html.escape(background, quote=True)
+    fg = html.escape(color, quote=True)
+    return (
+        f'<a href="{href}" target="_top" '
+        f'style="display:flex;align-items:center;justify-content:center;'
+        f"min-height:44px;width:100%;box-sizing:border-box;border-radius:10px;"
+        f"border:1px solid {bg};background:{bg};color:{fg};"
+        f"font-family:Figtree,sans-serif;font-weight:600;text-decoration:none;"
+        f'padding:0.4rem 0.8rem;">{text}</a>'
+    )
 
 
 def build_authorize_url(client_id: str, redirect_uri: str, *, state: str = "bike_wind") -> str:

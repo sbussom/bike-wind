@@ -97,12 +97,18 @@ from bike_wind.strava import (
     StravaError,
     load_strava_config,
 )
+from bike_wind.experimental import (
+    pack_effort_verdict,
+    pack_vs_actual_lines,
+    solve_pack_eta,
+)
 from bike_wind.strava.oauth import (
     ACTIVITY_SCOPE_HINT,
     DEFAULT_REDIRECT_URI,
     build_authorize_url,
     exchange_code,
     oauth_configured,
+    same_tab_connect_html,
     scope_has_activity_read,
 )
 from bike_wind.weather import hrrr_enabled_by_env
@@ -138,6 +144,8 @@ def _init_state() -> None:
             st.session_state.clothing_key = DEFAULT_CLOTHING_KEY
     if "power_w" not in st.session_state:
         st.session_state.power_w = 220
+    if "pack_ride" not in st.session_state:
+        st.session_state.pack_ride = False
     if "strava_meta" not in st.session_state:
         st.session_state.strava_meta = None
     if "strava_segment_id" not in st.session_state:
@@ -889,6 +897,75 @@ def _format_time_error_pct(error_pct: float) -> str:
     return f"{error_pct:+.1f}%"
 
 
+def _render_pack_comparison(
+    result,
+    whatif,
+    actual_s: float | None,
+    *,
+    power_w: float,
+    wind_speed_mps: float,
+    grade_scale: float,
+    use_recorded_power: bool,
+) -> None:
+    """Pack-off vs pack-on segment time for the loaded power-meter effort.
+
+    Pack-off is the production what-if already on screen. This does not
+    re-solve that case.
+    """
+    if st.session_state.get("route_source") != "effort":
+        st.caption(
+            "Pack off vs on needs the segment effort selected above. "
+            "Only an outdoor power-meter effort is scored."
+        )
+        return
+    effort = st.session_state.get("selected_effort")
+    if not isinstance(effort, SegmentEffortSummary):
+        st.caption(
+            "Pack off vs on needs the segment effort selected above. "
+            "Only an outdoor power-meter effort is scored."
+        )
+        return
+    activity = st.session_state.get("selected_activity")
+    act = activity if isinstance(activity, ActivitySummary) else None
+    if accuracy_skip_reason(act, effort) is not None:
+        verdict = pack_effort_verdict(
+            predicted_off_s=float(whatif.eta_with_wind_s),
+            predicted_on_s=float(whatif.eta_with_wind_s),
+            actual_s=float(actual_s or effort.elapsed_time_s or effort.moving_time_s or 0),
+            activity=act,
+            effort=effort,
+            name=effort.name or "Segment effort",
+        )
+        for line in pack_vs_actual_lines(verdict):
+            st.caption(line)
+        return
+    clock = actual_s
+    if clock is None:
+        clock = float(effort.elapsed_time_s or effort.moving_time_s)
+    on_eta = solve_pack_eta(
+        result,
+        power_w=power_w,
+        wind_speed_mps=wind_speed_mps,
+        grade_scale=grade_scale,
+        use_recorded_power=use_recorded_power,
+    )
+    verdict = pack_effort_verdict(
+        predicted_off_s=float(whatif.eta_with_wind_s),
+        predicted_on_s=on_eta,
+        actual_s=float(clock),
+        activity=act,
+        effort=effort,
+        name=effort.name or "Segment effort",
+    )
+    for line in pack_vs_actual_lines(verdict):
+        st.caption(line)
+    if verdict.on is not None:
+        st.caption(
+            "Pack off is the usual prediction. Pack on is Cd·A ×0.70 "
+            "with the low-power Cd·A increase off."
+        )
+
+
 def _panel_rider_controls(*, key_prefix: str):
     """Position / surface / clothing / power / mass for one mode panel."""
     labels = position_labels()
@@ -1607,11 +1684,15 @@ def _render_home() -> None:
                 strava_cfg.client_id,  # type: ignore[arg-type]
                 strava_cfg.redirect_uri or DEFAULT_REDIRECT_URI,
             )
-            st.link_button(
-                "Connect with Strava",
-                auth_url,
-                use_container_width=True,
+            pal = chart_palette(bool(st.session_state.get("bw_dark")))
+            st.html(
+                same_tab_connect_html(
+                    auth_url,
+                    background=pal.accent,
+                    color=pal.on_accent,
+                )
             )
+            st.caption("Same tab. Strava sends you back to this page.")
             if needs_activity_reconnect:
                 st.button(
                     "Disconnect",
@@ -1814,6 +1895,15 @@ def _render_home() -> None:
             "time with percent error. No next-week forecast here."
         )
         _past_ride_pickers()
+        st.toggle(
+            "Pack ride (5-10 riders)",
+            key="pack_ride",
+            help=(
+                "Off: the usual solo prediction. On: also show this effort "
+                "with mid-pack drafting (Cd·A ×0.70, no low-power drag increase) "
+                "beside the solo time. Only a power-meter segment effort is scored."
+            ),
+        )
         with st.expander("Or load a segment / GPX", expanded=False):
             _resolve_segment_from_input(key_prefix="past")
             st.caption("GPX — use your own file instead of a segment or ride.")
@@ -2225,6 +2315,16 @@ def _render_home() -> None:
                 st.caption(
                     "No usable actual time on this selection — pick a segment effort "
                     "or a ride with moving time."
+                )
+            if st.session_state.get("pack_ride"):
+                _render_pack_comparison(
+                    result,
+                    whatif,
+                    actual_s,
+                    power_w=float(whatif_power),
+                    wind_speed_mps=float(whatif_wind_mph) / 2.236936,
+                    grade_scale=float(whatif_grade_pct) / 100.0,
+                    use_recorded_power=bool(use_recorded),
                 )
         else:
             st.html(
