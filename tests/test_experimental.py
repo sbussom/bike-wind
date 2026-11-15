@@ -23,6 +23,7 @@ from bike_wind.experimental import (
     apply_manual_setup,
     apply_pack_setup,
     average_speed_mph,
+    solve_pack_eta,
     build_production_params,
     build_sections,
     compare_with_production,
@@ -37,7 +38,7 @@ from bike_wind.experimental import (
 from bike_wind.gpx.parse import RouteStreams
 from bike_wind.physics.forces import WindComponents, aero_force
 from bike_wind.physics.solver import solve_speeds
-from bike_wind.predict import PredictionResult, downsample_route, predict_speeds
+from bike_wind.predict import PredictionResult, apply_what_if, downsample_route, predict_speeds
 from bike_wind.strava.models import ActivitySummary, SegmentEffortSummary
 from bike_wind.surface.osm_surface import OFF_MAP, PAVED, UNPAVED, route_surface_classes
 from bike_wind.weather.open_meteo import WeatherFetchError
@@ -612,18 +613,36 @@ def test_pack_column_is_optional_and_only_meter_efforts_are_scored():
     assert estimated.off is None
 
 
-def test_pack_toggle_defaults_off_and_the_main_page_does_not_use_it():
+def test_pack_toggle_is_on_the_main_page_and_off_by_default():
     root = Path(__file__).resolve().parents[1]
     page = (root / "pages" / "2_Experimental.py").read_text()
     app = (root / "app.py").read_text()
-    assert "Pack / race group (5-10 riders)" in page
-    assert "exp_pack_on = False" in page
-    assert "apply_pack_setup" not in app
-    assert "PACK_GROUP" not in app
-    assert "exp_pack_on" not in app
+    assert 'st.toggle(\n            "Pack ride (5-10 riders)"' in app
+    assert "pack_ride = False" in app
+    assert "exp_pack_on" not in page
+    assert "Pack / race group" not in page
     predict_src = inspect.getsource(predict_speeds)
     solver_src = inspect.getsource(solve_speeds)
     assert "apply_pack_setup" not in predict_src
     assert "PACK_GROUP" not in predict_src
+    assert "solve_pack_eta" not in predict_src
     assert "apply_pack_setup" not in solver_src
     assert "PACK_GROUP" not in solver_src
+
+
+def test_solve_pack_eta_is_faster_and_leaves_the_production_solve():
+    params = build_production_params(rider_kg=69.0, power_w=220.0)
+    result = _flat_result(params)
+    solo = apply_what_if(
+        result, power_w=220.0, wind_speed_mps=0.0, grade_scale=1.0, use_recorded_power=True
+    )
+    packed = solve_pack_eta(
+        result, power_w=220.0, wind_speed_mps=0.0, grade_scale=1.0, use_recorded_power=True
+    )
+    again = apply_what_if(
+        result, power_w=220.0, wind_speed_mps=0.0, grade_scale=1.0, use_recorded_power=True
+    )
+    assert packed < solo.eta_with_wind_s
+    assert again.eta_with_wind_s == solo.eta_with_wind_s
+    assert result.params.power_cda is True
+    assert result.params.area_m2 == pytest.approx(params.area_m2)
