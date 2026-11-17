@@ -10,6 +10,7 @@ from bike_wind.strava.oauth import (
     ACTIVITY_SCOPE_HINT,
     DEFAULT_REDIRECT_URI,
     OAuthTokenError,
+    OAuthTokens,
     READ_SCOPE,
     build_authorize_url,
     same_tab_connect_html,
@@ -97,17 +98,23 @@ def test_safe_oauth_error_redacts_tokenish() -> None:
     assert "[redacted]" in detail
 
 
-def test_connect_link_stays_in_this_tab() -> None:
+def test_connect_link_leaves_the_cloud_frame() -> None:
+    """st.html strips target=_top. The click handler must navigate window.top."""
     url = build_authorize_url("12345", DEFAULT_REDIRECT_URI)
     html = same_tab_connect_html(url)
-    assert 'target="_top"' in html
     assert "Connect with Strava" in html
     assert "www.strava.com/oauth/authorize" in html
-    assert 'target="_blank"' not in html
+    assert "window.top" in html
+    assert "location.href" in html
+    assert "preventDefault" in html
+    # Survives DOMPurify when the script does not run. _top would be deleted.
+    assert 'target="_blank"' in html
+    assert 'target="_top"' not in html
     root = __import__("pathlib").Path(__file__).resolve().parents[1]
     app = (root / "app.py").read_text()
     assert "st.link_button" not in app
     assert "same_tab_connect_html" in app
+    assert "unsafe_allow_javascript=True" in app
 
 
 def test_authorize_url_includes_activity_read_scope() -> None:
@@ -127,6 +134,62 @@ def test_scope_has_activity_read() -> None:
     assert not scope_has_activity_read(None)
     assert not scope_has_activity_read("")
     assert "allow access to activities" in ACTIVITY_SCOPE_HINT.lower()
+
+
+def test_callback_exchanges_code_once_and_keeps_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A top-level ?code= is exchanged once and survives the query-param clear."""
+    from streamlit.testing.v1 import AppTest
+
+    import app as app_mod
+
+    calls = {"n": 0}
+
+    def fake_exchange(**kwargs: object) -> OAuthTokens:
+        calls["n"] += 1
+        assert kwargs["code"] == "good-code"
+        return OAuthTokens(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at=123,
+            athlete_id=7,
+            scope="read,activity:read",
+        )
+
+    monkeypatch.setattr(app_mod, "exchange_code", fake_exchange)
+    monkeypatch.setattr("bike_wind.strava.oauth.exchange_code", fake_exchange)
+    # Connecting loads recent rides immediately. A fake token must not hit Strava
+    # and get cleared by a failed refresh.
+    monkeypatch.setattr(
+        "bike_wind.strava.client.StravaClient.list_recent_activities",
+        lambda self, **kwargs: [],
+    )
+
+    app_path = __import__("pathlib").Path(__file__).resolve().parents[1] / "app.py"
+    at = AppTest.from_file(str(app_path), default_timeout=30)
+    at.secrets["STRAVA_CLIENT_ID"] = "287757"
+    at.secrets["STRAVA_CLIENT_SECRET"] = "test-secret"
+    at.secrets["STRAVA_REDIRECT_URI"] = DEFAULT_REDIRECT_URI
+    at.query_params["code"] = "good-code"
+    at.query_params["state"] = "bike_wind"
+    at.query_params["scope"] = "read,activity:read"
+    at.run()
+
+    assert calls["n"] == 1
+    assert at.session_state["strava_oauth_connected"] is True
+    assert at.session_state["strava_access_token"] == "access-1"
+    assert at.session_state["strava_token_scope"] == "read,activity:read"
+    assert "code" not in at.query_params
+    assert not any("Strava OAuth failed" in el.value for el in at.error)
+
+    def exchange_again(**kwargs: object) -> OAuthTokens:
+        calls["n"] += 1
+        raise AssertionError(f"code exchanged again: {kwargs}")
+
+    monkeypatch.setattr(app_mod, "exchange_code", exchange_again)
+    monkeypatch.setattr("bike_wind.strava.oauth.exchange_code", exchange_again)
+    at.run()
+    assert calls["n"] == 1
+    assert at.session_state["strava_access_token"] == "access-1"
 
 
 def test_exchange_code_success() -> None:

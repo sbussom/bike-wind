@@ -1690,7 +1690,8 @@ def _render_home() -> None:
                     auth_url,
                     background=pal.accent,
                     color=pal.on_accent,
-                )
+                ),
+                unsafe_allow_javascript=True,
             )
             st.caption("Same tab. Strava sends you back to this page.")
             if needs_activity_reconnect:
