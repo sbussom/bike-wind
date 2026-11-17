@@ -52,24 +52,45 @@ def same_tab_connect_html(
     background: str = "#0f6e4e",
     color: str = "#ffffff",
 ) -> str:
-    """Authorize link that stays in this browser tab.
+    """Authorize link that leaves the Community Cloud frame.
 
-    ``st.link_button`` always opens a new tab, which starts a second Streamlit
-    session. ``target="_top"`` navigates the top window, including when the
-    control sits in a frame. Strava then redirects back to this app in that
-    same tab, and the OAuth callback stores the token on the new run.
+    ``st.html`` runs the markup through DOMPurify, which keeps ``target="_blank"``
+    and drops every other ``target`` (including ``_top``). A frameless link then
+    loads Strava inside the Cloud iframe. The redirect back is a cross-site
+    iframe navigation, Chrome does not send the ``SameSite=Lax`` session cookie,
+    and Cloud answers with its own login page — so Connect appears to loop.
+
+    The click handler assigns ``window.top.location`` so the round trip is a
+    top-level navigation in this tab. ``target="_blank"`` is only the no-script
+    fallback, because that is the one target the sanitizer preserves, and a new
+    tab is still outside the frame. Render with
+    ``st.html(..., unsafe_allow_javascript=True)`` or the handler is stripped.
     """
     href = html.escape(url, quote=True)
     text = html.escape(label)
     bg = html.escape(background, quote=True)
     fg = html.escape(color, quote=True)
     return (
-        f'<a href="{href}" target="_top" '
+        f'<a id="bw-strava-connect" href="{href}" target="_blank" '
+        f'rel="noopener noreferrer" '
         f'style="display:flex;align-items:center;justify-content:center;'
         f"min-height:44px;width:100%;box-sizing:border-box;border-radius:10px;"
         f"border:1px solid {bg};background:{bg};color:{fg};"
         f"font-family:Figtree,sans-serif;font-weight:600;text-decoration:none;"
         f'padding:0.4rem 0.8rem;">{text}</a>'
+        "<script>"
+        "(function(){"
+        'var link=document.getElementById("bw-strava-connect");'
+        "if(!link||link.getAttribute('data-bw-bound')==='1')return;"
+        "link.setAttribute('data-bw-bound','1');"
+        "link.addEventListener('click',function(event){"
+        "event.preventDefault();"
+        "var dest=link.href;"
+        "try{(window.top||window).location.href=dest;}"
+        "catch(err){window.open(dest,'_blank','noopener,noreferrer');}"
+        "});"
+        "})();"
+        "</script>"
     )
 
 
