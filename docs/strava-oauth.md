@@ -46,8 +46,8 @@ In https://www.strava.com/settings/api :
 
 | Field | Value |
 | --- | --- |
-| Authorization Callback Domain | `bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app` |
-| Redirect URI (exact, no path) | `https://bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app` |
+| Authorization Callback Domain | `gustypower.streamlit.app` |
+| Redirect URI | `https://gustypower.streamlit.app/~/+/` |
 
 Same string must be `STRAVA_REDIRECT_URI` / `[strava].redirect_uri` in secrets.
 
@@ -57,7 +57,7 @@ Same string must be `STRAVA_REDIRECT_URI` / `[strava].redirect_uri` in secrets.
 [strava]
 client_id = "your_client_id"
 client_secret = "your_client_secret"
-redirect_uri = "https://bike-wind-prm8ndkr5xgfmy6rxdd4tj.streamlit.app"
+redirect_uri = "https://gustypower.streamlit.app/~/+/"
 # access_token = "optional owner fallback (expires — pair with refresh_token)"
 # refresh_token = "optional; used to refresh expired access_token"
 ```

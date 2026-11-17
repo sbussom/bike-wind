@@ -106,6 +106,7 @@ from bike_wind.strava.oauth import (
     ACTIVITY_SCOPE_HINT,
     DEFAULT_REDIRECT_URI,
     build_authorize_url,
+    connect_redirect_uri,
     exchange_code,
     oauth_configured,
     same_tab_connect_html,
@@ -1682,7 +1683,7 @@ def _render_home() -> None:
         elif oauth_ok:
             auth_url = build_authorize_url(
                 strava_cfg.client_id,  # type: ignore[arg-type]
-                strava_cfg.redirect_uri or DEFAULT_REDIRECT_URI,
+                connect_redirect_uri(strava_cfg.redirect_uri or DEFAULT_REDIRECT_URI),
             )
             pal = chart_palette(bool(st.session_state.get("bw_dark")))
             st.html(
@@ -1690,10 +1691,12 @@ def _render_home() -> None:
                     auth_url,
                     background=pal.accent,
                     color=pal.on_accent,
-                ),
-                unsafe_allow_javascript=True,
+                )
             )
-            st.caption("Same tab. Strava sends you back to this page.")
+            st.caption(
+                "Same tab. On the direct app the address bar goes to Strava and comes back. "
+                "Inside the Cloud site, Strava opens in the page and returns you here signed in."
+            )
             if needs_activity_reconnect:
                 st.button(
                     "Disconnect",

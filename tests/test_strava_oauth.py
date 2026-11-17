@@ -13,8 +13,9 @@ from bike_wind.strava.oauth import (
     OAuthTokens,
     READ_SCOPE,
     build_authorize_url,
-    same_tab_connect_html,
+    connect_redirect_uri,
     exchange_code,
+    same_tab_connect_html,
     refresh_access_token,
     safe_oauth_error_detail,
     scope_has_activity_read,
@@ -98,23 +99,38 @@ def test_safe_oauth_error_redacts_tokenish() -> None:
     assert "[redacted]" in detail
 
 
-def test_connect_link_leaves_the_cloud_frame() -> None:
-    """st.html strips target=_top. The click handler must navigate window.top."""
-    url = build_authorize_url("12345", DEFAULT_REDIRECT_URI)
+def test_bare_host_callback_is_rewritten_to_the_unframed_app() -> None:
+    assert connect_redirect_uri(None) == "https://gustypower.streamlit.app/~/+/"
+    assert connect_redirect_uri("https://gustypower.streamlit.app") == (
+        "https://gustypower.streamlit.app/~/+/"
+    )
+    assert connect_redirect_uri("https://gustypower.streamlit.app/") == (
+        "https://gustypower.streamlit.app/~/+/"
+    )
+    assert connect_redirect_uri("https://gustypower.streamlit.app/~/+/") == (
+        "https://gustypower.streamlit.app/~/+/"
+    )
+    assert connect_redirect_uri(DEFAULT_REDIRECT_URI).endswith("/~/+/")
+    other = "https://bike-wind-example.streamlit.app"
+    assert connect_redirect_uri(other) == other
+    url = build_authorize_url("12345", connect_redirect_uri("https://gustypower.streamlit.app"))
+    assert "redirect_uri=https%3A%2F%2Fgustypower.streamlit.app%2F~%2F%2B%2F" in url
+
+
+def test_connect_link_stays_in_this_tab() -> None:
+    url = build_authorize_url("12345", connect_redirect_uri(DEFAULT_REDIRECT_URI))
     html = same_tab_connect_html(url)
-    assert "Connect with Strava" in html
-    assert "www.strava.com/oauth/authorize" in html
-    assert "window.top" in html
-    assert "location.href" in html
-    assert "preventDefault" in html
-    # Survives DOMPurify when the script does not run. _top would be deleted.
-    assert 'target="_blank"' in html
+    assert 'target="_self"' in html
+    assert 'target="_blank"' not in html
     assert 'target="_top"' not in html
+    assert "<script>" not in html
+    assert "www.strava.com/oauth/authorize" in html
+    assert "%2F~%2F%2B%2F" in html
     root = __import__("pathlib").Path(__file__).resolve().parents[1]
-    app = (root / "app.py").read_text()
-    assert "st.link_button" not in app
-    assert "same_tab_connect_html" in app
-    assert "unsafe_allow_javascript=True" in app
+    source = (root / "app.py").read_text()
+    assert "st.link_button" not in source
+    assert "connect_redirect_uri" in source
+    assert "unsafe_allow_javascript" not in source
 
 
 def test_authorize_url_includes_activity_read_scope() -> None:

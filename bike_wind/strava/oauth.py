@@ -15,7 +15,13 @@ TOKEN_URL = "https://www.strava.com/oauth/token"
 # read = public segment GPS; activity:read = athlete recent rides / streams
 READ_SCOPE = "read,activity:read"
 ACTIVITY_READ_SCOPE = "activity:read"
-DEFAULT_REDIRECT_URI = "https://gustypower.streamlit.app"
+# Bare host is the Community Cloud shell. A cross-site return to that URL
+# (Strava redirecting the sandboxed app frame) is answered with a login redirect
+# and the OAuth code is dropped. /~/+/ is the app itself, with no shell.
+SHELL_REDIRECT_URI = "https://gustypower.streamlit.app"
+UNFRAMED_REDIRECT_URI = "https://gustypower.streamlit.app/~/+/"
+# Settings fallback stays the bare host. The authorize URL rewrites it.
+DEFAULT_REDIRECT_URI = SHELL_REDIRECT_URI
 # Shown when the browser session token lacks activity:read (secrets stay read-only).
 ACTIVITY_SCOPE_HINT = "Connect again and allow access to activities."
 
@@ -45,6 +51,24 @@ def oauth_configured(client_id: str | None, client_secret: str | None, redirect_
     return bool(client_id and client_secret and redirect_uri)
 
 
+def connect_redirect_uri(configured: str | None) -> str:
+    """Redirect Strava should use so the code reaches the app, not the Cloud login.
+
+    The shell at ``https://gustypower.streamlit.app/`` returns 303 to
+    ``share.streamlit.io`` when the session cookie is missing, which is what a
+    cross-site iframe navigation looks like. ``/~/+/`` is served by the app
+    directly and keeps ``?code=``.
+
+    The Cloud iframe is sandboxed without ``allow-top-navigation``, so a click
+    inside the shell cannot change the browser address bar. Same-tab login
+    navigates that frame to Strava and back to this unframed path.
+    """
+    text = (configured or "").strip()
+    if not text or text.rstrip("/") == SHELL_REDIRECT_URI:
+        return UNFRAMED_REDIRECT_URI
+    return text
+
+
 def same_tab_connect_html(
     url: str,
     *,
@@ -52,45 +76,24 @@ def same_tab_connect_html(
     background: str = "#0f6e4e",
     color: str = "#ffffff",
 ) -> str:
-    """Authorize link that leaves the Community Cloud frame.
+    """Same-frame link. No script and no ``target=_blank``.
 
-    ``st.html`` runs the markup through DOMPurify, which keeps ``target="_blank"``
-    and drops every other ``target`` (including ``_top``). A frameless link then
-    loads Strava inside the Cloud iframe. The redirect back is a cross-site
-    iframe navigation, Chrome does not send the ``SameSite=Lax`` session cookie,
-    and Cloud answers with its own login page — so Connect appears to loop.
-
-    The click handler assigns ``window.top.location`` so the round trip is a
-    top-level navigation in this tab. ``target="_blank"`` is only the no-script
-    fallback, because that is the one target the sanitizer preserves, and a new
-    tab is still outside the frame. Render with
-    ``st.html(..., unsafe_allow_javascript=True)`` or the handler is stripped.
+    ``st.html`` deletes every ``target`` except ``_blank``. ``_top`` never
+    reaches the browser, and the Cloud iframe would block it anyway. ``_self``
+    navigates the app document: the top window when the page is ``/~/+/``, or
+    the Cloud frame when the shell is wrapped around it.
     """
     href = html.escape(url, quote=True)
     text = html.escape(label)
     bg = html.escape(background, quote=True)
     fg = html.escape(color, quote=True)
     return (
-        f'<a id="bw-strava-connect" href="{href}" target="_blank" '
-        f'rel="noopener noreferrer" '
+        f'<a href="{href}" target="_self" '
         f'style="display:flex;align-items:center;justify-content:center;'
         f"min-height:44px;width:100%;box-sizing:border-box;border-radius:10px;"
         f"border:1px solid {bg};background:{bg};color:{fg};"
         f"font-family:Figtree,sans-serif;font-weight:600;text-decoration:none;"
         f'padding:0.4rem 0.8rem;">{text}</a>'
-        "<script>"
-        "(function(){"
-        'var link=document.getElementById("bw-strava-connect");'
-        "if(!link||link.getAttribute('data-bw-bound')==='1')return;"
-        "link.setAttribute('data-bw-bound','1');"
-        "link.addEventListener('click',function(event){"
-        "event.preventDefault();"
-        "var dest=link.href;"
-        "try{(window.top||window).location.href=dest;}"
-        "catch(err){window.open(dest,'_blank','noopener,noreferrer');}"
-        "});"
-        "})();"
-        "</script>"
     )
 
 
