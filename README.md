@@ -67,7 +67,7 @@ streamlit run app.py
 
 Open http://localhost:8501. GPX works with no Strava credentials. Use **Prefer NOAA HRRR** on CONUS routes for ~3 km wind; otherwise Open-Meteo is primary.
 
-**Connect with Strava** stays in this tab. The Cloud site sandboxes the app frame without `allow-top-navigation`, so a click there cannot change the browser address bar. Strava is sent back to `https://gustypower.streamlit.app/~/+/` (the app with no Cloud login shell) and that page stores the token. Open that direct URL if you want the address bar itself to show Strava.
+**Connect with Strava** on gustypower.streamlit.app opens a new tab. The Cloud frame cannot change the address bar, and a link inside it loads Strava in the frame (login loops). Finish in the new tab; Strava sends that tab to `https://gustypower.streamlit.app/~/+/` signed in. Keep using that tab. A local run stays in the same tab.
 
 On **Past ride analysis**, **Pack ride (5-10 riders)** is off unless you turn it on. Off, the prediction is the usual solo model. On, the same loaded segment effort also shows predicted vs actual with mid-pack drafting: Cd·A ×0.70 and the low-power Cd·A increase off. The 30% figure is the low end of the second-rider saving in Blocken, Toparlar, van Druenen, and Andrianne, *Journal of Wind Engineering and Industrial Aerodynamics* 182 (2018) 128–145 (https://doi.org/10.1016/j.jweia.2018.09.015). Only an outdoor power-meter effort counts (Strava `device_watts`). Virtual, Zwift, trainer, and estimated-power rides are left out.
 

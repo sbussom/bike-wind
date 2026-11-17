@@ -13,6 +13,7 @@ from bike_wind.strava.oauth import (
     OAuthTokens,
     READ_SCOPE,
     build_authorize_url,
+    connect_opens_new_tab,
     connect_redirect_uri,
     exchange_code,
     same_tab_connect_html,
@@ -130,7 +131,25 @@ def test_connect_link_stays_in_this_tab() -> None:
     source = (root / "app.py").read_text()
     assert "st.link_button" not in source
     assert "connect_redirect_uri" in source
+    assert "connect_opens_new_tab" in source
     assert "unsafe_allow_javascript" not in source
+    assert "Opens Strava in a new tab" in source
+
+
+def test_cloud_shell_connect_opens_a_new_tab() -> None:
+    assert connect_opens_new_tab("https://gustypower.streamlit.app/")
+    assert connect_opens_new_tab("https://gustypower.streamlit.app/~/+/")
+    assert connect_opens_new_tab("https://bike-wind-example.streamlit.app/~/+/")
+    assert not connect_opens_new_tab("http://localhost:8501")
+    assert not connect_opens_new_tab(None)
+    url = build_authorize_url("12345", connect_redirect_uri(DEFAULT_REDIRECT_URI))
+    html = same_tab_connect_html(url, new_tab=True)
+    assert 'target="_blank"' in html
+    assert 'rel="noopener noreferrer"' in html
+    assert 'target="_self"' not in html
+    assert 'target="_top"' not in html
+    assert "<script>" not in html
+    assert "www.strava.com/oauth/authorize" in html
 
 
 def test_authorize_url_includes_activity_read_scope() -> None:

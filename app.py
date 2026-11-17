@@ -106,6 +106,7 @@ from bike_wind.strava.oauth import (
     ACTIVITY_SCOPE_HINT,
     DEFAULT_REDIRECT_URI,
     build_authorize_url,
+    connect_opens_new_tab,
     connect_redirect_uri,
     exchange_code,
     oauth_configured,
@@ -1686,17 +1687,28 @@ def _render_home() -> None:
                 connect_redirect_uri(strava_cfg.redirect_uri or DEFAULT_REDIRECT_URI),
             )
             pal = chart_palette(bool(st.session_state.get("bw_dark")))
+            try:
+                page_url = st.context.url
+            except Exception:  # noqa: BLE001
+                page_url = None
+            new_tab = connect_opens_new_tab(page_url)
             st.html(
                 same_tab_connect_html(
                     auth_url,
                     background=pal.accent,
                     color=pal.on_accent,
+                    new_tab=new_tab,
                 )
             )
-            st.caption(
-                "Same tab. On the direct app the address bar goes to Strava and comes back. "
-                "Inside the Cloud site, Strava opens in the page and returns you here signed in."
-            )
+            if new_tab:
+                st.caption(
+                    "Opens Strava in a new tab. This Cloud page is in a frame that "
+                    "cannot change the address bar, so signing in here loops. "
+                    "Finish in the new tab; it comes back to the app signed in. "
+                    "Keep using that tab."
+                )
+            else:
+                st.caption("Same tab. The address bar goes to Strava and comes back.")
             if needs_activity_reconnect:
                 st.button(
                     "Disconnect",
