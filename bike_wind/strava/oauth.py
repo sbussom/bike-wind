@@ -6,7 +6,7 @@ import html
 import re
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import requests
 
@@ -69,26 +69,44 @@ def connect_redirect_uri(configured: str | None) -> str:
     return text
 
 
+def connect_opens_new_tab(page_url: str | None) -> bool:
+    """True on Streamlit Community Cloud, where the app sits in a sandboxed frame.
+
+    That frame has no ``allow-top-navigation``, and ``st.html`` keeps only
+    ``target="_blank"``. A same-frame link therefore loads Strava inside the
+    iframe while the address bar stays on the shell. The iframe's own URL is
+    often already ``/~/+/``, so the path cannot tell the shell from a direct
+    visit. Any ``*.streamlit.app`` host opens Strava in a new tab. Local and
+    other hosts stay in this tab.
+    """
+    if not page_url:
+        return False
+    host = (urlsplit(page_url).hostname or "").lower()
+    return host == "gustypower.streamlit.app" or host.endswith(".streamlit.app")
+
+
 def same_tab_connect_html(
     url: str,
     *,
     label: str = "Connect with Strava",
     background: str = "#0f6e4e",
     color: str = "#ffffff",
+    new_tab: bool = False,
 ) -> str:
-    """Same-frame link. No script and no ``target=_blank``.
+    """Connect link. ``new_tab`` is the Cloud path (``target="_blank"``).
 
-    ``st.html`` deletes every ``target`` except ``_blank``. ``_top`` never
-    reaches the browser, and the Cloud iframe would block it anyway. ``_self``
-    navigates the app document: the top window when the page is ``/~/+/``, or
-    the Cloud frame when the shell is wrapped around it.
+    ``st.html`` drops every ``target`` except ``_blank``, and the Cloud iframe
+    blocks ``_top``. ``_self`` is a normal top-level navigation only when this
+    page is not inside that frame (local, or a host that is not Cloud).
     """
     href = html.escape(url, quote=True)
     text = html.escape(label)
     bg = html.escape(background, quote=True)
     fg = html.escape(color, quote=True)
+    target = "_blank" if new_tab else "_self"
+    rel = ' rel="noopener noreferrer"' if new_tab else ""
     return (
-        f'<a href="{href}" target="_self" '
+        f'<a href="{href}" target="{target}"{rel} '
         f'style="display:flex;align-items:center;justify-content:center;'
         f"min-height:44px;width:100%;box-sizing:border-box;border-radius:10px;"
         f"border:1px solid {bg};background:{bg};color:{fg};"
