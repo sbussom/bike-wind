@@ -15,6 +15,7 @@
 # 2026-11-13: bumped to 0.6.37 to force a Cloud reinstall after collapsed mode panels.
 # 2026-11-15: bumped to 0.6.38 to force a Cloud reinstall after the pack-drafting toggle.
 # 2026-11-15: bumped to 0.6.39 to force a Cloud reinstall after the main-page pack toggle.
+# 2026-11-16: bumped to 0.6.40 to force a Cloud reinstall after the same-tab Strava callback.
 -e .
 numpy>=1.26
 requests>=2.31
